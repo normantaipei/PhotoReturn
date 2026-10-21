@@ -656,6 +656,10 @@ def main():
             step_upload(con, staging, album)
         except requests.RequestException as e:
             log(f"  ⚠ 上傳失敗：{e}（可 --resume {album} 重試）")
+            if sys.platform == "darwin" and ("Errno 65" in str(e) or "No route to host" in str(e)):
+                # macOS 15+ 的「本機網路」權限：沒允許的 App（及其啟動的 Python）連區網會得到 errno 65
+                log("  👉 很可能是 macOS 的「本機網路」權限擋住了：系統設定 → 隱私權與安全性 → 本機網路，\n"
+                    "     打開你用來執行的 App（終端機 / iTerm / VS Code…）。清單裡沒有的話，從該 App 再跑一次會跳出詢問。")
     if not args.skip_nas:
         step_nas(con, staging, album)
 
