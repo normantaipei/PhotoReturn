@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # PhotoReturn 一鍵安裝（Debian 12 / Ubuntu LXC，以 root 執行）
 #
-# 這是範本：在 Mac 上執行 deploy/build-installer.sh，會把後端 + 前端 build 打包進來，
-# 產生單一檔案 dist/photoreturn-install.sh。再次執行即為更新，資料、token 與設定都會保留。
+# 兩種用法，再次執行即為更新，資料、token 與設定都會保留：
+#   1. 打包版：在 Mac 上執行 deploy/build-installer.sh，把後端 + 前端 build 打包成單一檔案
+#      dist/photoreturn-install.sh，再複製到伺服器執行（安裝法 A）
+#   2. 原始碼版：bootstrap.sh 在伺服器上 clone repo、build 前端後，以 PHOTORETURN_SRC=<repo> 直接執行（安裝法 B）
 #
 # 參數（不給就互動詢問；沒有終端機時用預設值）：
 #   --site-name NAME   網站名稱（首頁標題、分頁標題、分享預覽）  預設「返圖」
@@ -11,9 +13,12 @@
 #   --port N           返圖站 port               預設 8080
 #   --upload-nets CIDR 允許上傳的網段（逗號分隔）  預設 LXC 所在區網
 #   --public-url URL   對外網址（反向代理/網域）   預設 http://<LXC IP>:<port>
+#   --no-prompt        不詢問，沒給的用預設值（Proxmox 一鍵安裝時用）
 set -euo pipefail
 
 INGEST_CMD="__INGEST_CMD__"   # build 時填入 Mac 上 ingest.sh 的路徑
+case "$INGEST_CMD" in __*__) INGEST_CMD="ingest/ingest.sh" ;; esac   # 原始碼版：不知道 Mac 上 clone 在哪
+NO_PROMPT=""
 APP=/opt/photoreturn
 DATA=/var/lib/photoreturn
 ENV_FILE=/etc/photoreturn.env
@@ -26,7 +31,7 @@ has_tty() { [ -t 1 ] && ( : </dev/tty ) 2>/dev/null; }
 # ask 變數名 提示 預設值：變數已有值就不問
 ask() {
   local __v="${!1:-}"
-  if [ -z "$__v" ] && has_tty; then
+  if [ -z "$__v" ] && [ -z "$NO_PROMPT" ] && has_tty; then
     read -r -p "$2 [${3:-留空}]: " __v </dev/tty || true
   fi
   printf -v "$1" '%s' "${__v:-$3}"
@@ -44,6 +49,7 @@ main() {
       --port) PORT="$2"; shift 2 ;;
       --upload-nets) UPLOAD_NETS="$2"; shift 2 ;;
       --public-url) PUBLIC_URL="$2"; shift 2 ;;
+      --no-prompt) NO_PROMPT=1; shift ;;
       -h|--help) sed -n '2,15p' "$0" 2>/dev/null || true; exit 0 ;;
       *) die "不認得的參數：$1" ;;
     esac
@@ -83,9 +89,18 @@ main() {
     die "NAS 位址格式應為 smb://帳號@NAS_IP/共用資料夾/子資料夾"
   fi
 
-  say "解開程式（後端 + 前端）"
-  local TMP; TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
-  printf '%s' "$PAYLOAD_B64" | base64 -d | tar -xz -C "$TMP"
+  say "取得程式（後端 + 前端）"
+  TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
+  if [ -n "${PHOTORETURN_SRC:-}" ]; then
+    # 原始碼版：從 repo 取後端與已 build 好的前端
+    [ -f "$PHOTORETURN_SRC/web/dist/index.html" ] || die "找不到 $PHOTORETURN_SRC/web/dist，前端還沒 build"
+    mkdir -p "$TMP/server" "$TMP/web"
+    cp -a "$PHOTORETURN_SRC/server/app" "$PHOTORETURN_SRC/server/requirements.txt" "$TMP/server/"
+    cp -a "$PHOTORETURN_SRC/web/dist" "$TMP/web/dist"
+    cp "$PHOTORETURN_SRC/deploy/photoreturn.service" "$TMP/"
+  else
+    printf '%s' "$PAYLOAD_B64" | base64 -d | tar -xz -C "$TMP"
+  fi
   id photoreturn &>/dev/null || useradd --system --home "$DATA" --shell /usr/sbin/nologin photoreturn
   mkdir -p "$APP" "$DATA"
   rm -rf "$APP/server/app" "$APP/web"
@@ -129,6 +144,10 @@ ENV
 set -a; source /etc/photoreturn.env; set +a
 q() { printf '"%s"' "$1"; }
 echo "在 Mac mini 上執行（插卡後；加了 --save，之後只要打 ingest.sh 本身）："
+case "$PHOTORETURN_HINT_INGEST" in
+  /*|~*) ;;
+  *) echo "（先 git clone https://github.com/normantaipei/PhotoReturn ，在 PhotoReturn 資料夾裡執行）" ;;
+esac
 echo
 printf '  %s \\\n    --server %s \\\n    --token %s \\\n    --staging %s' \
   "$PHOTORETURN_HINT_INGEST" "$PHOTORETURN_HINT_SERVER" "$PHOTORETURN_UPLOAD_TOKEN" "$(q "$PHOTORETURN_HINT_STAGING")"
@@ -161,4 +180,6 @@ CMD
   echo "═════════════════════════════════════════════════════════════════"
 }
 
-# ---- 以下由 build-installer.sh 附加：PAYLOAD_B64=... 與 main "$@" ----
+# 原始碼版（bootstrap.sh 設了 PHOTORETURN_SRC）直接執行；打包版由 build-installer.sh 在下面附加程式包與 main "$@"
+if [ -n "${PHOTORETURN_SRC:-}" ]; then main "$@"; fi
+# ---- 以下由 build-installer.sh 附加 ----

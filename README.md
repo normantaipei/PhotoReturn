@@ -34,37 +34,54 @@ cd PhotoReturn
 
 以下指令都在 `PhotoReturn/` 資料夾內執行。
 
-## 安裝後端 + 前端（LXC，一行）
+## 安裝返圖站（後端 + 前端）
 
-1. 建一台 Debian 12 LXC。在 Mac 上一行搞定（`<PVE_IP>` 換成 Proxmox 主機 IP；會自動放入你的 SSH 公鑰，完成後印出 LXC 的 IP 與下一步指令）：
+兩種方式擇一，裝完都會印出 Mac 端要執行的完整指令（含 token、暫存資料夾、後端位址、NAS 位址）。
+
+| | 安裝法 A：從 Mac 經 SSH | 安裝法 B：在 Proxmox Shell 直接裝 |
+|---|---|---|
+| 適合 | Mac 能 ssh 到 Proxmox / LXC | Proxmox 沒開 SSH，或想最省事 |
+| 在哪裡下指令 | Mac 終端機 | Proxmox 網頁介面 → 節點 → **Shell** |
+| 程式從哪來 | Mac 上這份原始碼打包（改過程式也能裝） | 容器直接從 GitHub 抓最新版、在容器裡 build |
+| Mac 需要 Node.js | 要（build 前端） | 不用 |
+
+### 安裝法 B：在 Proxmox Shell 一行安裝
+
+在 Proxmox 網頁介面點節點 → **Shell**，貼上：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/normantaipei/PhotoReturn/main/deploy/create-lxc.sh | bash -s -- --install
+```
+
+會先詢問 **網站名稱**、**LXC 磁碟大小**、**Mac 暫存資料夾**、**NAS 位址**，接著自動：
+建立 Debian 12 LXC → 在容器裡執行 [`bootstrap.sh`](bootstrap.sh)（clone repo、下載官方 Node.js 並驗證 SHA-256、build 前端、安裝服務）→ 印出 Mac 端指令。
+
+- 想先看過腳本再執行：`curl -fsSL https://raw.githubusercontent.com/normantaipei/PhotoReturn/main/deploy/create-lxc.sh -o create-lxc.sh && less create-lxc.sh && bash create-lxc.sh --install`
+- 指定分支或 tag：加 `--ref v0.2.0`；LXC 規格參數同下方安裝法 A。
+- **不是 Proxmox**（一般 Debian 12 / Ubuntu VM 或實體機）：在那台機器上以 root 跑
+  `curl -fsSL https://raw.githubusercontent.com/normantaipei/PhotoReturn/main/bootstrap.sh | bash`
+- Mac 端記得 `git clone` 這個 repo（ingest 在裡面），印出的指令要在 `PhotoReturn/` 資料夾裡執行。
+
+### 安裝法 A：從 Mac 經 SSH
+
+1. 建一台 Debian 12 LXC（已經有就跳過）。`<PVE_IP>` 換成 Proxmox 主機 IP；會自動放入你的 SSH 公鑰，完成後印出 LXC 的 IP：
 
 ```bash
 ssh root@<PVE_IP> "bash -s -- --ssh-key '$(cat ~/.ssh/id_ed25519.pub)'" < deploy/create-lxc.sh
 ```
 
    預設：下一個可用編號、unprivileged、2 核 / 1GB RAM / 64GB 磁碟（照片也放這裡）、`vmbr0` DHCP、開機自動啟動。
-   可加參數調整，例如照片多就 `--disk 500`；其他：`--id`、`--hostname`、`--cores`、`--memory`、`--storage`、`--bridge`（見腳本開頭說明）。
-   已經有 LXC 的話跳過這步。
+   可加參數調整，例如照片多就 `--disk 500`；其他：`--id`、`--hostname`、`--cores`、`--memory`、`--storage`、`--bridge`。
 
-2. 在 Mac 上打包安裝檔（會順便 build 前端）：
-
-```bash
-./deploy/build-installer.sh
-```
-
-3. 一行安裝（`<LXC_IP>` 換成 LXC 的 IP）：
+2. 在 Mac 上打包並安裝（`<LXC_IP>` 換成上一步印出的 IP）：
 
 ```bash
-scp dist/photoreturn-install.sh root@<LXC_IP>:/tmp/ && ssh -t root@<LXC_IP> bash /tmp/photoreturn-install.sh
+./deploy/build-installer.sh && scp dist/photoreturn-install.sh root@<LXC_IP>:/tmp/ && ssh -t root@<LXC_IP> bash /tmp/photoreturn-install.sh
 ```
 
-LXC 還沒開 root SSH 的話，經 Proxmox 主機：
+### 安裝時的設定
 
-```bash
-scp dist/photoreturn-install.sh root@<PVE_IP>:/tmp/ && ssh -t root@<PVE_IP> 'pct push <CTID> /tmp/photoreturn-install.sh /tmp/photoreturn-install.sh && pct exec <CTID> -- bash /tmp/photoreturn-install.sh'
-```
-
-安裝時會問三件事，也可以直接帶參數不問：
+安裝時會問三件事（安裝法 B 在 Proxmox Shell 一開始就問完，再交給 `bootstrap.sh`），也可以直接帶參數不問：
 
 | 問題 | 參數 | 說明 |
 |---|---|---|
@@ -73,15 +90,25 @@ scp dist/photoreturn-install.sh root@<PVE_IP>:/tmp/ && ssh -t root@<PVE_IP> 'pct
 | NAS 位址 | `--nas` | `smb://帳號@NAS_IP/共用資料夾/子資料夾`，留空不備份 |
 
 ```bash
+# 安裝法 A 的安裝檔；bootstrap.sh 也接受同樣的參數
 bash /tmp/photoreturn-install.sh --site-name "小明的返圖" --nas "smb://user@192.168.1.10/photo/返圖備份" --staging '$HOME/PhotoReturnStaging'
 ```
 
-（其他參數：`--port`、`--upload-nets`、`--public-url`，見安裝檔開頭說明）
-重跑安裝會沿用上次的答案不再詢問；之後要改網站名稱，重跑時帶 `--site-name`，或改 `/etc/photoreturn.env` 的 `PHOTORETURN_SITE_NAME` 再 `systemctl restart photoreturn`。
+（其他參數：`--port`、`--upload-nets`、`--public-url`、`--no-prompt`，見安裝檔開頭說明）
+忘記 Mac 端指令時，在 LXC 執行 `photoreturn-cmd` 再印一次。
+重跑安裝會沿用上次的答案、保留 token 與照片；之後要改網站名稱，重跑時帶 `--site-name`，或改 `/etc/photoreturn.env` 的 `PHOTORETURN_SITE_NAME` 再 `systemctl restart photoreturn`。
 每本相簿的名稱與標題則是在 Mac 端用 `--album`、`--title` 設定。
 
-裝完會印出 Mac 端要執行的完整指令（含 token、暫存資料夾、後端位址、NAS 位址）。忘記時在 LXC 執行 `photoreturn-cmd` 再印一次。
-程式更新：重跑 `build-installer.sh` 和上面那一行即可，token、資料、設定都會保留。
+### 更新到新版
+
+重跑即為更新，token、照片、設定都會保留：
+
+- 安裝法 A：`git pull` 後重跑第 2 步那一行。
+- 安裝法 B：在 Proxmox Shell（`<CTID>` 換成容器編號）：
+
+```bash
+pct exec <CTID> -- bash -c 'curl -fsSL https://raw.githubusercontent.com/normantaipei/PhotoReturn/main/bootstrap.sh | bash -s -- --no-prompt'
+```
 
 ### 上傳保護
 
@@ -103,7 +130,7 @@ VPN 連回家若被分到別的網段，要上傳時把該網段加進 `PHOTORET
 
 ### LXC 上的位置
 
-- 設定：`/etc/photoreturn.env`；程式：`/opt/photoreturn`；資料：`/var/lib/photoreturn`（`originals/`、`derived/`、`photoreturn.db`）
+- 設定：`/etc/photoreturn.env`；程式：`/opt/photoreturn`（安裝法 B 的原始碼在 `/opt/photoreturn/src`）；資料：`/var/lib/photoreturn`（`originals/`、`derived/`、`photoreturn.db`）
 - 服務：`systemctl status photoreturn`、`journalctl -u photoreturn -f`
 
 ## Mac 端（ingest）

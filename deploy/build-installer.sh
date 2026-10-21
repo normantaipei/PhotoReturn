@@ -15,11 +15,14 @@ mkdir -p "$TMP/server" "$TMP/web"
 rsync -a --exclude .venv --exclude data --exclude __pycache__ "$ROOT/server/" "$TMP/server/"
 cp -R "$ROOT/web/dist" "$TMP/web/dist"
 cp "$ROOT/deploy/photoreturn.service" "$TMP/"
-# COPYFILE_DISABLE / --no-mac-metadata：不要把 macOS 的 ._ 檔與 xattr 包進去（Debian 的 tar 會抱怨）
-PAYLOAD=$(COPYFILE_DISABLE=1 tar -C "$TMP" --no-mac-metadata --no-xattrs -cz . | base64 | tr -d '\n' | fold -w 76)
+# macOS（bsdtar）：不要把 ._ 檔與 xattr 包進去（Debian 的 tar 會抱怨）；Linux（GNU tar，GitHub Actions）不用
+if tar --version 2>/dev/null | grep bsdtar >/dev/null; then TAR_OPTS=(--no-mac-metadata --no-xattrs)
+else TAR_OPTS=(--owner=0 --group=0); fi
+PAYLOAD=$(COPYFILE_DISABLE=1 tar -C "$TMP" "${TAR_OPTS[@]}" -cz . | base64 | tr -d '\n' | fold -w 76)
 
 # Mac 上 ingest.sh 的路徑（家目錄寫成 ~，印出的指令比較短）
-INGEST_CMD="$ROOT/ingest/ingest.sh"
+# GitHub Actions 打包時傳 INGEST_CMD=ingest/ingest.sh（不知道使用者 clone 在哪）
+INGEST_CMD="${INGEST_CMD:-$ROOT/ingest/ingest.sh}"
 INGEST_CMD="${INGEST_CMD/#$HOME/~}"
 
 mkdir -p "$ROOT/dist"
