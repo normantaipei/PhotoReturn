@@ -5,6 +5,7 @@
 # 產生單一檔案 dist/photoreturn-install.sh。再次執行即為更新，資料、token 與設定都會保留。
 #
 # 參數（不給就互動詢問；沒有終端機時用預設值）：
+#   --site-name NAME   網站名稱（首頁標題、分頁標題、分享預覽）  預設「返圖」
 #   --staging PATH     Mac 上的暫存資料夾        預設 $HOME/PhotoReturnStaging
 #   --nas URL          NAS 備份位置              smb://帳號@NAS_IP/共用資料夾/子資料夾，留空不備份
 #   --port N           返圖站 port               預設 8080
@@ -34,9 +35,10 @@ ask() {
 env_get() { [ -f "$ENV_FILE" ] && sed -n "s/^$1=//p" "$ENV_FILE" | tail -1 | sed "s/^'\(.*\)'\$/\1/" || true; }
 
 main() {
-  local STAGING="" NAS="" PORT="" UPLOAD_NETS="" PUBLIC_URL=""
+  local SITE_NAME="" STAGING="" NAS="" PORT="" UPLOAD_NETS="" PUBLIC_URL=""
   while [ $# -gt 0 ]; do
     case "$1" in
+      --site-name) SITE_NAME="$2"; shift 2 ;;
       --staging) STAGING="$2"; shift 2 ;;
       --nas) NAS="$2"; shift 2 ;;
       --port) PORT="$2"; shift 2 ;;
@@ -51,6 +53,7 @@ main() {
 
   # 重跑時沿用上次的設定
   PORT=${PORT:-$(env_get PHOTORETURN_PORT)}; PORT=${PORT:-8080}
+  SITE_NAME=${SITE_NAME:-$(env_get PHOTORETURN_SITE_NAME)}
   STAGING=${STAGING:-$(env_get PHOTORETURN_HINT_STAGING)}
   NAS=${NAS:-$(env_get PHOTORETURN_HINT_NAS)}
 
@@ -72,6 +75,8 @@ main() {
   PUBLIC_URL=${PUBLIC_URL:-http://$IP:$PORT}
 
   echo
+  ask SITE_NAME "網站名稱（首頁標題、分頁標題、貼到通訊軟體時顯示）" "返圖"
+  SITE_NAME=$(printf '%s' "$SITE_NAME" | tr -d "'\n\r")   # 設定檔用單引號包，不能含單引號
   ask STAGING "Mac 上的暫存資料夾" '$HOME/PhotoReturnStaging'
   ask NAS "NAS 備份位置（smb://帳號@NAS_IP/共用資料夾/子資料夾）" ""
   if [ -n "$NAS" ] && ! [[ "$NAS" =~ ^smb://[^/]+/[^/]+ ]]; then
@@ -106,6 +111,8 @@ PHOTORETURN_PORT=$PORT
 PHOTORETURN_UPLOAD_TOKEN=$TOKEN
 # 只有這些網段直連才能上傳（逗號分隔 CIDR），經反向代理轉進來的上傳一律拒絕
 PHOTORETURN_UPLOAD_NETS=$UPLOAD_NETS
+# 網站名稱（改完 systemctl restart photoreturn）
+PHOTORETURN_SITE_NAME='${SITE_NAME}'
 # 返圖連結的網址前綴（有網域 / 反向代理時改這裡）
 PHOTORETURN_PUBLIC_URL=$PUBLIC_URL
 # 以下只用來印出 Mac 端指令
@@ -143,7 +150,7 @@ CMD
 
   echo
   echo "════════════════════ ✅ PhotoReturn 安裝完成 ════════════════════"
-  echo "  返圖站：$PUBLIC_URL"
+  echo "  返圖站：${SITE_NAME}　$PUBLIC_URL"
   echo "  上傳限制：token + 只接受 $UPLOAD_NETS 直連"
   echo "  資料：$DATA   設定：$ENV_FILE"
   echo

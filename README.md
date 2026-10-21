@@ -64,9 +64,21 @@ LXC 還沒開 root SSH 的話，經 Proxmox 主機：
 scp dist/photoreturn-install.sh root@<PVE_IP>:/tmp/ && ssh -t root@<PVE_IP> 'pct push <CTID> /tmp/photoreturn-install.sh /tmp/photoreturn-install.sh && pct exec <CTID> -- bash /tmp/photoreturn-install.sh'
 ```
 
-安裝時會問 **Mac 暫存資料夾** 與 **NAS 位址**（`smb://帳號@NAS_IP/共用資料夾/子資料夾`），也可以直接帶參數不問：
-`bash /tmp/photoreturn-install.sh --nas "smb://user@192.168.1.10/photo/返圖備份" --staging '$HOME/PhotoReturnStaging'`
+安裝時會問三件事，也可以直接帶參數不問：
+
+| 問題 | 參數 | 說明 |
+|---|---|---|
+| 網站名稱 | `--site-name` | 首頁標題、瀏覽器分頁標題、貼到通訊軟體時的網站名，預設「返圖」 |
+| Mac 暫存資料夾 | `--staging` | 預設 `$HOME/PhotoReturnStaging` |
+| NAS 位址 | `--nas` | `smb://帳號@NAS_IP/共用資料夾/子資料夾`，留空不備份 |
+
+```bash
+bash /tmp/photoreturn-install.sh --site-name "小明的返圖" --nas "smb://user@192.168.1.10/photo/返圖備份" --staging '$HOME/PhotoReturnStaging'
+```
+
 （其他參數：`--port`、`--upload-nets`、`--public-url`，見安裝檔開頭說明）
+重跑安裝會沿用上次的答案不再詢問；之後要改網站名稱，重跑時帶 `--site-name`，或改 `/etc/photoreturn.env` 的 `PHOTORETURN_SITE_NAME` 再 `systemctl restart photoreturn`。
+每本相簿的名稱與標題則是在 Mac 端用 `--album`、`--title` 設定。
 
 裝完會印出 Mac 端要執行的完整指令（含 token、暫存資料夾、後端位址、NAS 位址）。忘記時在 LXC 執行 `photoreturn-cmd` 再印一次。
 程式更新：重跑 `build-installer.sh` 和上面那一行即可，token、資料、設定都會保留。

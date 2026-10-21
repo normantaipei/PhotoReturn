@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { pageTitle } from "../lib/site.js";
 import { fetchAlbum } from "../lib/api.js";
 import { justify } from "../lib/justify.js";
 import PhotoTile from "./PhotoTile.vue";
@@ -23,7 +24,7 @@ onMounted(async () => {
   ro.observe(galleryEl.value);
   try {
     album.value = await fetchAlbum(props.shareKey);
-    document.title = `${album.value.title} · 返圖`;
+    document.title = pageTitle(album.value.title);
   } catch (e) {
     error.value = e.message;
   }

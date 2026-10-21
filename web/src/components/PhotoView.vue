@@ -1,6 +1,7 @@
 <script setup>
 // 單張分享頁：只看得到這一張，沒有回到整本相簿的連結
 import { onMounted, ref } from "vue";
+import { pageTitle } from "../lib/site.js";
 import { fetchPhoto, photoMediaUrl } from "../lib/api.js";
 import DownloadButtons from "./DownloadButtons.vue";
 
@@ -12,7 +13,7 @@ const loaded = ref(false);
 onMounted(async () => {
   try {
     photo.value = await fetchPhoto(props.photoKey);
-    document.title = `${photo.value.album_title} · 返圖`;
+    document.title = pageTitle(photo.value.album_title);
   } catch (e) {
     error.value = e.message;
   }

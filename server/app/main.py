@@ -36,6 +36,8 @@ from pydantic import BaseModel
 DATA_DIR = Path(os.environ.get("PHOTORETURN_DATA", "./data")).expanduser().resolve()
 UPLOAD_TOKEN = os.environ.get("PHOTORETURN_UPLOAD_TOKEN", "")
 PUBLIC_URL = os.environ.get("PHOTORETURN_PUBLIC_URL", "").rstrip("/")
+# 網站名稱：首頁標題、分頁標題後綴、通訊軟體預覽的網站名（安裝時設定）
+SITE_NAME = os.environ.get("PHOTORETURN_SITE_NAME", "").strip() or "返圖"
 # 允許上傳的來源網段（安裝時設成 LXC 所在的區網），預設只開私有網段
 UPLOAD_NETS = [ipaddress.ip_network(n.strip(), strict=False) for n in os.environ.get(
     "PHOTORETURN_UPLOAD_NETS", "127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,::1/128").split(",")
@@ -541,15 +543,16 @@ def base_url(request: Request) -> str:
     return PUBLIC_URL or str(request.base_url).rstrip("/")
 
 
-def spa(request: Request, title: str = "返圖", description: str = "", image: Optional[str] = None,
+def spa(request: Request, title: Optional[str] = None, description: str = "", image: Optional[str] = None,
         size=None, path: str = ""):
     index = WEB_DIR / "index.html"
     if not index.exists():
         raise HTTPException(500, f"找不到前端：{WEB_DIR}（先在 web/ 執行 npm run build）")
     base = base_url(request)
     e = lambda s: html.escape(s, quote=True)
+    title = title or SITE_NAME
     tags = [
-        '<meta property="og:site_name" content="返圖">',
+        f'<meta property="og:site_name" content="{e(SITE_NAME)}">',
         '<meta property="og:type" content="website">',
         f'<meta property="og:title" content="{e(title)}">',
         f'<meta property="og:url" content="{e(base + path)}">',
@@ -565,8 +568,9 @@ def spa(request: Request, title: str = "返圖", description: str = "", image: O
         if size:
             tags += [f'<meta property="og:image:width" content="{size[0]}">',
                      f'<meta property="og:image:height" content="{size[1]}">']
-    page = index.read_text(encoding="utf-8").replace(
-        "<title>返圖</title>", f"<title>{e(title)}</title>\n  " + "\n  ".join(tags), 1)
+    page = (index.read_text(encoding="utf-8")
+            .replace('<meta name="site-name" content="返圖">', f'<meta name="site-name" content="{e(SITE_NAME)}">', 1)
+            .replace("<title>返圖</title>", f"<title>{e(title)}</title>\n  " + "\n  ".join(tags), 1))
     return HTMLResponse(page, headers={"Cache-Control": "no-cache"})
 
 
