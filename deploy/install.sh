@@ -75,7 +75,8 @@ main() {
   UPLOAD_NETS=${UPLOAD_NETS:-$(env_get PHOTORETURN_UPLOAD_NETS)}
   UPLOAD_NETS=${UPLOAD_NETS:-$NET,127.0.0.1/32}
   PUBLIC_URL=${PUBLIC_URL:-$(env_get PHOTORETURN_PUBLIC_URL)}
-  PUBLIC_URL=${PUBLIC_URL:-http://$IP:$PORT}
+  # 舊版把區網 IP 寫成對外網址，經反向代理分享時通訊軟體抓不到縮圖；是那個舊預設值就清掉，改自動判斷
+  [ "$PUBLIC_URL" = "http://$IP:$PORT" ] && PUBLIC_URL=""
 
   echo
   ask SITE_NAME "網站名稱：整個返圖站的名字，例「小明的返圖」（每本相簿的名稱之後在 Mac 上傳時才設定）" "返圖"
@@ -123,7 +124,8 @@ PHOTORETURN_UPLOAD_TOKEN=$TOKEN
 PHOTORETURN_UPLOAD_NETS=$UPLOAD_NETS
 # 網站名稱（改完 systemctl restart photoreturn）
 PHOTORETURN_SITE_NAME='${SITE_NAME}'
-# 返圖連結的網址前綴（有網域 / 反向代理時改這裡）
+# 對外網址，例 https://photos.example.com。留空 = 自動用瀏覽者連進來的網域
+#（經反向代理時讀 X-Forwarded-Host / Proto），通訊軟體縮圖與分享連結都靠它
 PHOTORETURN_PUBLIC_URL=$PUBLIC_URL
 # 以下只用來印出 Mac 端指令
 PHOTORETURN_HINT_INGEST='$INGEST_CMD'
@@ -165,7 +167,8 @@ CMD
 
   echo
   echo "════════════════════ ✅ PhotoReturn 安裝完成 ════════════════════"
-  echo "  返圖站：${SITE_NAME}　$PUBLIC_URL"
+  echo "  返圖站：${SITE_NAME}　${PUBLIC_URL:-http://$IP:$PORT}"
+  [ -n "$PUBLIC_URL" ] || echo "  對外網址：自動（經反向代理 / https 網域連進來時，縮圖與連結會用那個網域）"
   echo "  上傳限制：token + 只接受 $UPLOAD_NETS 直連"
   echo "  資料：$DATA   設定：$ENV_FILE"
   echo

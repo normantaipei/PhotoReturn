@@ -581,9 +581,24 @@ def share_zip(key: str, min_stars: int = 0, fmt: str = "jpg"):
 
 # ---------- 前端（web/ 的 Vue build 產物）＋ Open Graph ----------
 
+HOST_RE = re.compile(r"^[A-Za-z0-9.\-]{1,253}(:\d{1,5})?$")
+
+
 def base_url(request: Request) -> str:
-    """og:image 必須是絕對網址；有設定對外網址就用它（反向代理 / https 時一定要設）。"""
-    return PUBLIC_URL or str(request.base_url).rstrip("/")
+    """og:image 必須是外面連得到的絕對網址。
+    有設定 PHOTORETURN_PUBLIC_URL 就用它；沒有就用這次請求的網域：經反向代理時取
+    X-Forwarded-Host / X-Forwarded-Proto（NPM、Caddy、Cloudflare Tunnel 預設都會帶），
+    所以 https 網域不用另外設定。只影響這次回應裡的網址，不涉及權限判斷。"""
+    if PUBLIC_URL:
+        return PUBLIC_URL
+    h = request.headers
+    host = (h.get("x-forwarded-host") or h.get("host") or "").split(",")[0].strip()
+    proto = (h.get("x-forwarded-proto") or "").split(",")[0].strip().lower()
+    if proto not in ("http", "https"):
+        proto = request.url.scheme
+    if not HOST_RE.match(host):
+        return str(request.base_url).rstrip("/")
+    return f"{proto}://{host}"
 
 
 def spa(request: Request, title: Optional[str] = None, description: str = "", image: Optional[str] = None,
