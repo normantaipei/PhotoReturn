@@ -21,8 +21,8 @@ Mac mini（ingest/）                                   Proxmox LXC（server/ + 
 
 | 位置 | 需求 |
 |---|---|
-| Mac（處理照片） | macOS 15 以上（美學評分 API）、Apple Silicon 建議、[Homebrew](https://brew.sh)、Python 3、Node.js 20.19+（只用來 build 前端） |
-| 伺服器 | Debian 12 / Ubuntu 的 LXC、VM 或實體機，root 權限 |
+| Mac（處理照片） | macOS 15 以上（美學評分 API）、Apple Silicon 建議、[Homebrew](https://brew.sh)、Node.js 20.19+（只用來 build 前端）。Python 3.10+ 由 `setup.sh` 自動用 Homebrew 安裝（macOS 內建的 3.9 只能裝到有已知漏洞的套件版本） |
+| 伺服器 | Debian 12 / Ubuntu 22.04 以上（Python 3.10+）的 LXC、VM 或實體機，root 權限 |
 | NAS（選用） | SMB 共用資料夾 |
 
 ```bash

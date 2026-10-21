@@ -1,2 +1,2 @@
-pyobjc-framework-Vision==11.1
-requests==2.32.5
+pyobjc-framework-Vision==12.2.2
+requests==2.34.2

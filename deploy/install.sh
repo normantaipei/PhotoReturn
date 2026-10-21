@@ -58,6 +58,8 @@ main() {
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq </dev/null
   apt-get install -y -qq python3 python3-venv iproute2 curl ca-certificates </dev/null >/dev/null
+  python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))' \
+    || die "需要 Python 3.10 以上（目前 $(python3 --version)），請用 Debian 12 / Ubuntu 22.04 以上"
 
   local IP CIDR NET
   IP=$(ip -o -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p')

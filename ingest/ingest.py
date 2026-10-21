@@ -32,9 +32,7 @@ import time
 from pathlib import Path
 from urllib.parse import quote, unquote, urlsplit
 
-import warnings
-warnings.filterwarnings("ignore", message="urllib3 v2 only supports OpenSSL")
-import requests  # noqa: E402
+import requests
 
 HERE = Path(__file__).resolve().parent
 VIDEO_SKIP = {".mp4", ".mov", ".mts", ".m2ts", ".avi", ".xml", ".thm", ".lrv", ".bin", ".dat"}
