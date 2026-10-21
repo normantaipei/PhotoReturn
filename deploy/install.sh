@@ -7,9 +7,8 @@
 #   2. 原始碼版：bootstrap.sh 在伺服器上 clone repo、build 前端後，以 PHOTORETURN_SRC=<repo> 直接執行（安裝法 B）
 #
 # 參數（不給就互動詢問；沒有終端機時用預設值）：
-#   --site-name NAME   網站名稱（首頁標題、分頁標題、分享預覽）  預設「返圖」
-#   --staging PATH     Mac 上的暫存資料夾        預設 $HOME/PhotoReturnStaging
-#   --nas URL          NAS 備份位置              smb://帳號@NAS_IP/共用資料夾/子資料夾，留空不備份
+#   --site-name NAME   網站名稱：整個返圖站的名字（首頁標題、分頁標題、分享預覽）  預設「返圖」
+#                      每本相簿的名稱不在這裡設，是 Mac 上傳時用 ingest 的 --album / --title
 #   --port N           返圖站 port               預設 8080
 #   --upload-nets CIDR 允許上傳的網段（逗號分隔）  預設 LXC 所在區網
 #   --public-url URL   對外網址（反向代理/網域）   預設 http://<LXC IP>:<port>
@@ -40,12 +39,11 @@ ask() {
 env_get() { [ -f "$ENV_FILE" ] && sed -n "s/^$1=//p" "$ENV_FILE" | tail -1 | sed "s/^'\(.*\)'\$/\1/" || true; }
 
 main() {
-  local SITE_NAME="" STAGING="" NAS="" PORT="" UPLOAD_NETS="" PUBLIC_URL=""
+  local SITE_NAME="" PORT="" UPLOAD_NETS="" PUBLIC_URL=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --site-name) SITE_NAME="$2"; shift 2 ;;
-      --staging) STAGING="$2"; shift 2 ;;
-      --nas) NAS="$2"; shift 2 ;;
+      --staging|--nas) shift 2 ;;   # 舊版參數：暫存資料夾與 NAS 已改在 Mac 端設定，忽略
       --port) PORT="$2"; shift 2 ;;
       --upload-nets) UPLOAD_NETS="$2"; shift 2 ;;
       --public-url) PUBLIC_URL="$2"; shift 2 ;;
@@ -60,8 +58,6 @@ main() {
   # 重跑時沿用上次的設定
   PORT=${PORT:-$(env_get PHOTORETURN_PORT)}; PORT=${PORT:-8080}
   SITE_NAME=${SITE_NAME:-$(env_get PHOTORETURN_SITE_NAME)}
-  STAGING=${STAGING:-$(env_get PHOTORETURN_HINT_STAGING)}
-  NAS=${NAS:-$(env_get PHOTORETURN_HINT_NAS)}
 
   say "安裝系統套件"
   export DEBIAN_FRONTEND=noninteractive
@@ -81,13 +77,8 @@ main() {
   PUBLIC_URL=${PUBLIC_URL:-http://$IP:$PORT}
 
   echo
-  ask SITE_NAME "網站名稱（首頁標題、分頁標題、貼到通訊軟體時顯示）" "返圖"
+  ask SITE_NAME "網站名稱：整個返圖站的名字，例「小明的返圖」（每本相簿的名稱之後在 Mac 上傳時才設定）" "返圖"
   SITE_NAME=$(printf '%s' "$SITE_NAME" | tr -d "'\n\r")   # 設定檔用單引號包，不能含單引號
-  ask STAGING "Mac 上的暫存資料夾" '$HOME/PhotoReturnStaging'
-  ask NAS "NAS 備份位置（smb://帳號@NAS_IP/共用資料夾/子資料夾）" ""
-  if [ -n "$NAS" ] && ! [[ "$NAS" =~ ^smb://[^/]+/[^/]+ ]]; then
-    die "NAS 位址格式應為 smb://帳號@NAS_IP/共用資料夾/子資料夾"
-  fi
 
   say "取得程式（後端 + 前端）"
   TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
@@ -131,8 +122,6 @@ PHOTORETURN_SITE_NAME='${SITE_NAME}'
 # 返圖連結的網址前綴（有網域 / 反向代理時改這裡）
 PHOTORETURN_PUBLIC_URL=$PUBLIC_URL
 # 以下只用來印出 Mac 端指令
-PHOTORETURN_HINT_STAGING='$STAGING'
-PHOTORETURN_HINT_NAS='$NAS'
 PHOTORETURN_HINT_INGEST='$INGEST_CMD'
 PHOTORETURN_HINT_SERVER=http://$IP:$PORT
 ENV
@@ -142,17 +131,19 @@ ENV
   cat > /usr/local/bin/photoreturn-cmd <<'CMD'
 #!/bin/bash
 set -a; source /etc/photoreturn.env; set +a
-q() { printf '"%s"' "$1"; }
-echo "在 Mac mini 上執行（插卡後；加了 --save，之後只要打 ingest.sh 本身）："
+echo "在 Mac 上執行（插卡後；--save 會記住連線設定，之後只要打 ingest.sh 本身）："
 case "$PHOTORETURN_HINT_INGEST" in
   /*|~*) ;;
   *) echo "（先 git clone https://github.com/normantaipei/PhotoReturn ，在 PhotoReturn 資料夾裡執行）" ;;
 esac
 echo
-printf '  %s \\\n    --server %s \\\n    --token %s \\\n    --staging %s' \
-  "$PHOTORETURN_HINT_INGEST" "$PHOTORETURN_HINT_SERVER" "$PHOTORETURN_UPLOAD_TOKEN" "$(q "$PHOTORETURN_HINT_STAGING")"
-[ -n "$PHOTORETURN_HINT_NAS" ] && printf ' \\\n    --nas %s' "$(q "$PHOTORETURN_HINT_NAS")"
-printf ' \\\n    --save\n'
+printf '  %s \\\n    --server %s \\\n    --token %s \\\n    --save\n' \
+  "$PHOTORETURN_HINT_INGEST" "$PHOTORETURN_HINT_SERVER" "$PHOTORETURN_UPLOAD_TOKEN"
+echo
+echo "Mac 端的其他設定（第一次可一起加在上面那行，--save 會記住）："
+echo "  --staging <資料夾>    暫存資料夾，預設 ~/PhotoReturnStaging"
+echo "  --nas smb://帳號@NAS_IP/共用資料夾/子資料夾    NAS 備份（不加就不備份）"
+echo "  --album <名稱>        相簿名稱（不加會在插卡後詢問，預設拍攝日期）"
 CMD
   chmod 700 /usr/local/bin/photoreturn-cmd
 
@@ -175,7 +166,6 @@ CMD
   echo
   /usr/local/bin/photoreturn-cmd
   echo
-  [ -n "$NAS" ] && echo "  NAS 密碼放 Mac 的 ~/Library/Preferences/nsmb.conf（同 Prism）就不用每次輸入。"
   echo "  忘記指令：在這台 LXC 執行 photoreturn-cmd"
   echo "═════════════════════════════════════════════════════════════════"
 }

@@ -9,9 +9,8 @@
 #
 # 參數（都可省略）：
 #   --install          建好後直接在容器裡跑 bootstrap.sh：從 GitHub 抓程式、build、安裝返圖站
-#   --site-name NAME   網站名稱                      （--install 用，沒給會詢問）
-#   --staging PATH     Mac 上的暫存資料夾              （--install 用，沒給會詢問）
-#   --nas URL          NAS 備份位置 smb://帳號@IP/共用資料夾/子資料夾（--install 用，沒給會詢問）
+#   --site-name NAME   網站名稱：整個返圖站的名字（--install 用，沒給會詢問）
+#                      暫存資料夾、NAS 備份、相簿名稱都是之後在 Mac 上傳時設定，這裡只架伺服器
 #   --ref BRANCH|TAG   要裝哪個分支或 tag              預設 main
 #   --id N             容器編號            預設下一個可用編號
 #   --hostname NAME    主機名稱            預設 photoreturn
@@ -44,13 +43,11 @@ ask() {
 # 中間的指令就不會把剩下的腳本當成自己的輸入吃掉
 main() {
 CTID="" HOST=photoreturn DISK="" CORES=2 MEM=1024 STORAGE="" BRIDGE=vmbr0 SSH_KEY=""
-INSTALL="" SITE_NAME="" STAGING="" NAS="" NAS_SET="" REF="main"
+INSTALL="" SITE_NAME="" REF="main"
 while [ $# -gt 0 ]; do
   case "$1" in
     --install) INSTALL=1; shift ;;
     --site-name) SITE_NAME="$2"; shift 2 ;;
-    --staging) STAGING="$2"; shift 2 ;;
-    --nas) NAS="$2"; NAS_SET=1; shift 2 ;;
     --ref) REF="$2"; shift 2 ;;
     --id) CTID="$2"; shift 2 ;;
     --hostname) HOST="$2"; shift 2 ;;
@@ -71,13 +68,8 @@ command -v pct >/dev/null || die "請在 Proxmox 主機上執行（找不到 pct
 if [ -n "$INSTALL" ]; then
   echo
   echo "PhotoReturn 安裝設定（直接 Enter 用預設值）"
-  ask SITE_NAME "網站名稱（首頁標題、分頁標題、貼到通訊軟體時顯示）" "返圖"
-  ask DISK "LXC 磁碟大小 GB（照片 JPG + RAW 都存這裡）" "64"
-  ask STAGING "Mac 上的暫存資料夾" '$HOME/PhotoReturnStaging'
-  [ -n "$NAS_SET" ] || ask NAS "NAS 備份位置（smb://帳號@NAS_IP/共用資料夾/子資料夾，留空不備份）" ""
-  if [ -n "$NAS" ] && ! [[ "$NAS" =~ ^smb://[^/]+/[^/]+ ]]; then
-    die "NAS 位址格式應為 smb://帳號@NAS_IP/共用資料夾/子資料夾"
-  fi
+  ask SITE_NAME "網站名稱：整個返圖站的名字，例「小明的返圖」（每本相簿的名稱之後在 Mac 上傳時才設定）" "返圖"
+  ask DISK "LXC 磁碟大小 GB（所有相簿的 JPG + RAW 都存這裡，一場活動可能就數十 GB）" "64"
   echo
 fi
 DISK=${DISK:-64}
@@ -141,7 +133,7 @@ if [ -n "$INSTALL" ]; then
   # 參數用 "$@" 傳進去，網站名稱有空白或中文也不會被拆開
   pct exec "$CTID" -- env PHOTORETURN_REPO="https://github.com/$REPO.git" PHOTORETURN_REF="$REF" \
     bash -c 'curl -fsSL "https://raw.githubusercontent.com/'"$REPO"'/'"$REF"'/bootstrap.sh" | bash -s -- "$@"' _ \
-    --no-prompt --site-name "$SITE_NAME" --staging "$STAGING" --nas "$NAS" </dev/null \
+    --no-prompt --site-name "$SITE_NAME" </dev/null \
     || die "安裝失敗，可進容器看看：pct enter ${CTID}"
   echo
   echo "  容器編號：$CTID   主機名稱：$HOST   IP：$IP"

@@ -24,6 +24,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -200,12 +201,35 @@ def copy_hash(src: Path, dst: Path) -> str:
     return h.hexdigest()
 
 
+ALBUM_RE = re.compile(r"^[\w.\-]{1,100}$")  # 和返圖站後端的規則一致（會出現在網址裡）
+
+
+def ask_album(con, default: str) -> str:
+    """沒給 --album 時，插卡後問相簿名稱；空白自動換成底線。"""
+    while True:
+        try:
+            ans = input(f"\n相簿名稱（例 2026-06-30_台北外拍，直接 Enter = {default}）：").strip()
+        except EOFError:
+            return default
+        name = re.sub(r"\s+", "_", ans) or default
+        if not ALBUM_RE.match(name):
+            print("  只能用文字、數字、. _ -，請重新輸入")
+            continue
+        if con.execute("SELECT 1 FROM albums WHERE name=?", (name,)).fetchone():
+            print(f"  「{name}」已存在，這張卡的照片會加進同一本相簿")
+        return name
+
+
 def step_copy(con, staging: Path, card: Path, album: str, title: str, prism, eject: bool):
     files = list_card_files(card, prism)
     if not files:
         sys.exit(f"{card} 裡沒有照片")
     shoot_date = dt.date.fromtimestamp(min(st.st_mtime for _, st in files)).isoformat()
+    if not album and sys.stdin.isatty():
+        album = ask_album(con, shoot_date)
     album = album or shoot_date
+    if not ALBUM_RE.match(album):
+        sys.exit(f"相簿名稱只能用文字、數字、. _ -（不能有空白）：{album}")
     con.execute("INSERT OR IGNORE INTO albums (name, title, shoot_date, created) VALUES (?,?,?,?)",
                 (album, title or album, shoot_date, time.time()))
     if title:
@@ -572,7 +596,7 @@ def show_list(con):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--card", help="記憶卡掛載點（預設自動找 /Volumes 下有 DCIM 的）")
-    ap.add_argument("--album", help="相簿名稱（英數、中文、. _ -），預設為拍攝日期")
+    ap.add_argument("--album", help="相簿名稱（文字、數字、. _ -），沒給會在插卡後詢問，預設為拍攝日期")
     ap.add_argument("--title", help="返圖頁顯示的標題（預設同相簿名稱）")
     ap.add_argument("--resume", metavar="ALBUM", help="不讀卡，繼續處理暫存區裡的相簿")
     ap.add_argument("--list", action="store_true", help="列出暫存區相簿與進度")

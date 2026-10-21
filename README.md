@@ -36,7 +36,8 @@ cd PhotoReturn
 
 ## 安裝返圖站（後端 + 前端）
 
-兩種方式擇一，裝完都會印出 Mac 端要執行的完整指令（含 token、暫存資料夾、後端位址、NAS 位址）。
+這一步**只架伺服器**；兩種方式擇一，裝完會印出 Mac 端要執行的指令（含後端位址與上傳 token）。
+暫存資料夾、NAS 備份、每本相簿的名稱，都是之後在 Mac 上傳時才設定（見〔Mac 端〕）。
 
 | | 安裝法 A：從 Mac 經 SSH | 安裝法 B：在 Proxmox Shell 直接裝 |
 |---|---|---|
@@ -53,7 +54,7 @@ cd PhotoReturn
 curl -fsSL https://raw.githubusercontent.com/normantaipei/PhotoReturn/main/deploy/create-lxc.sh | bash -s -- --install
 ```
 
-會先詢問 **網站名稱**、**LXC 磁碟大小**、**Mac 暫存資料夾**、**NAS 位址**，接著自動：
+會先詢問 **網站名稱**（整個返圖站的名字）與 **LXC 磁碟大小**，接著自動：
 建立 Debian 12 LXC → 在容器裡執行 [`bootstrap.sh`](bootstrap.sh)（clone repo、下載官方 Node.js 並驗證 SHA-256、build 前端、安裝服務）→ 印出 Mac 端指令。
 
 - 想先看過腳本再執行：`curl -fsSL https://raw.githubusercontent.com/normantaipei/PhotoReturn/main/deploy/create-lxc.sh -o create-lxc.sh && less create-lxc.sh && bash create-lxc.sh --install`
@@ -81,23 +82,16 @@ ssh root@<PVE_IP> "bash -s -- --ssh-key '$(cat ~/.ssh/id_ed25519.pub)'" < deploy
 
 ### 安裝時的設定
 
-安裝時會問三件事（安裝法 B 在 Proxmox Shell 一開始就問完，再交給 `bootstrap.sh`），也可以直接帶參數不問：
+伺服器安裝只問一件事（安裝法 B 另外問 LXC 磁碟大小），也可以用參數直接給：
 
 | 問題 | 參數 | 說明 |
 |---|---|---|
-| 網站名稱 | `--site-name` | 首頁標題、瀏覽器分頁標題、貼到通訊軟體時的網站名，預設「返圖」 |
-| Mac 暫存資料夾 | `--staging` | 預設 `$HOME/PhotoReturnStaging` |
-| NAS 位址 | `--nas` | `smb://帳號@NAS_IP/共用資料夾/子資料夾`，留空不備份 |
+| 網站名稱 | `--site-name` | **整個返圖站**的名字：首頁標題、瀏覽器分頁標題、貼到通訊軟體時的網站名，預設「返圖」。不是單本相簿的名稱 |
 
-```bash
-# 安裝法 A 的安裝檔；bootstrap.sh 也接受同樣的參數
-bash /tmp/photoreturn-install.sh --site-name "小明的返圖" --nas "smb://user@192.168.1.10/photo/返圖備份" --staging '$HOME/PhotoReturnStaging'
-```
-
-（其他參數：`--port`、`--upload-nets`、`--public-url`、`--no-prompt`，見安裝檔開頭說明）
+（其他參數：`--port`、`--upload-nets`、`--public-url`、`--no-prompt`，見 `deploy/install.sh` 開頭說明）
 忘記 Mac 端指令時，在 LXC 執行 `photoreturn-cmd` 再印一次。
-重跑安裝會沿用上次的答案、保留 token 與照片；之後要改網站名稱，重跑時帶 `--site-name`，或改 `/etc/photoreturn.env` 的 `PHOTORETURN_SITE_NAME` 再 `systemctl restart photoreturn`。
-每本相簿的名稱與標題則是在 Mac 端用 `--album`、`--title` 設定。
+重跑安裝會沿用上次的設定、保留 token 與照片；要改網站名稱，重跑時帶 `--site-name`，或改 `/etc/photoreturn.env` 的 `PHOTORETURN_SITE_NAME` 再 `systemctl restart photoreturn`。
+LXC 磁碟不夠時可在 Proxmox 加大（只能加大）：`pct resize <CTID> rootfs 200G`。
 
 ### 更新到新版
 
@@ -135,7 +129,15 @@ VPN 連回家若被分到別的網段，要上傳時把該網段加進 `PHOTORET
 
 ## Mac 端（ingest）
 
-直接貼上後端安裝完印出的指令即可（第一次會自動建 venv）。指令帶 `--save`，設定會存進 `ingest/.env`，之後只要：
+直接貼上後端安裝完印出的指令即可（第一次會自動建 venv）。指令帶 `--save`，設定會存進 `ingest/.env`。
+第一次可以順便加上 Mac 端的設定，`--save` 一起記住：
+
+| 參數 | 說明 |
+|---|---|
+| `--staging <資料夾>` | 暫存資料夾，預設 `~/PhotoReturnStaging` |
+| `--nas smb://帳號@NAS_IP/共用資料夾/子資料夾` | NAS 備份位置，不設就不備份 |
+
+沒給 `--album` 時，插卡後會詢問**相簿名稱**（直接 Enter 用拍攝日期；空白會自動換成底線）。之後只要：
 
 ```bash
 ingest/ingest.sh                       # 自動找卡（沒插就等），相簿名 = 拍攝日期
