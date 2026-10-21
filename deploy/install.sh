@@ -55,7 +55,8 @@ main() {
   [ "$(id -u)" = 0 ] || die "請用 root 執行"
   command -v apt-get >/dev/null || die "只支援 Debian / Ubuntu"
 
-  # 重跑時沿用上次的設定
+  # 重跑時沿用上次的設定（照片放哪也沿用：手動搬過資料夾的話，更新後不會指回空的預設位置）
+  DATA=$(env_get PHOTORETURN_DATA); DATA=${DATA:-/var/lib/photoreturn}
   PORT=${PORT:-$(env_get PHOTORETURN_PORT)}; PORT=${PORT:-8080}
   SITE_NAME=${SITE_NAME:-$(env_get PHOTORETURN_SITE_NAME)}
 
@@ -107,6 +108,9 @@ main() {
   chown -R photoreturn:photoreturn "$DATA"
 
   say "寫入設定 $ENV_FILE"
+  # 自己手動加進設定檔、這支腳本不認得的設定，原樣保留到新設定檔最後
+  local EXTRA=""
+  [ -f "$ENV_FILE" ] && EXTRA=$(grep -v -E '^(#|$|PHOTORETURN_(DATA|PORT|UPLOAD_TOKEN|UPLOAD_NETS|PUBLIC_URL|SITE_NAME|HINT_[A-Z]+)=)' "$ENV_FILE" || true)
   local TOKEN; TOKEN=$(env_get PHOTORETURN_UPLOAD_TOKEN)
   [ -n "$TOKEN" ] || TOKEN=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
   umask 077
@@ -125,6 +129,7 @@ PHOTORETURN_PUBLIC_URL=$PUBLIC_URL
 PHOTORETURN_HINT_INGEST='$INGEST_CMD'
 PHOTORETURN_HINT_SERVER=http://$IP:$PORT
 ENV
+  [ -z "$EXTRA" ] || printf '# 自訂設定（重跑安裝會保留）\n%s\n' "$EXTRA" >> "$ENV_FILE"
   umask 022
 
   # 之後忘記指令可在 LXC 執行 photoreturn-cmd 再印一次

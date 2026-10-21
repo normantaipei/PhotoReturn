@@ -12,6 +12,7 @@ PhotoReturn 返圖站 — 後端
 import hashlib
 import hmac
 import html
+import io
 import ipaddress
 import json
 import os
@@ -30,7 +31,7 @@ from urllib.parse import quote
 from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from PIL import Image, ImageOps
+from PIL import Image, ImageCms, ImageEnhance, ImageFilter, ImageOps
 from pydantic import BaseModel
 
 DATA_DIR = Path(os.environ.get("PHOTORETURN_DATA", "./data")).expanduser().resolve()
@@ -46,7 +47,9 @@ WEB_DIR = Path(os.environ.get("PHOTORETURN_WEB", Path(__file__).resolve().parent
 
 THUMB_EDGE = 800      # 格狀列表用，長邊
 PREVIEW_EDGE = 2048   # 燈箱大圖用，長邊
-SOCIAL_EDGE = 1200    # 通訊軟體 / 社群預覽圖，長邊（LINE、FB 建議 1200px、JPG、< 1MB）
+OG_SIZE = (1200, 630)  # 通訊軟體 / 社群預覽卡片：LINE、FB、Discord 都以 1.91:1 顯示，照這個比例做就不會被亂裁
+OG_COLLAGE = 3         # 相簿預覽拼幾張（星等最高的前幾張）
+OG_VERSION = "1"       # 改卡片樣式時遞增，網址跟著變，通訊軟體才會重抓
 
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 SLUG_RE = re.compile(r"^[\w.\-]{1,100}$")
@@ -141,10 +144,6 @@ def preview_path(sha: str) -> Path:
     return DATA_DIR / "derived" / sha[:2] / f"{sha}_p.jpg"
 
 
-def social_path(sha: str) -> Path:
-    return DATA_DIR / "derived" / sha[:2] / f"{sha}_s.jpg"
-
-
 def make_derivatives(src: Path, sha: str):
     """產生縮圖與預覽，回傳轉正後的原圖寬高。"""
     t, p = thumb_path(sha), preview_path(sha)
@@ -165,24 +164,70 @@ def make_derivatives(src: Path, sha: str):
     return w, h
 
 
-def ensure_social(sha: str) -> Path:
-    """通訊軟體預覽圖：從預覽圖縮成 1200px，sRGB JPG（有些 App 不吃 ICC / webp）。"""
-    s = social_path(sha)
-    if not s.exists():
-        with Image.open(preview_path(sha)) as im:
-            img = im.convert("RGB")
-        img.thumbnail((SOCIAL_EDGE, SOCIAL_EDGE), Image.LANCZOS)
-        tmp = s.with_suffix(".tmp")
-        img.save(tmp, "JPEG", quality=82, optimize=True)
-        os.replace(tmp, s)
-    return s
+# ---------- 通訊軟體預覽卡片（Open Graph） ----------
+
+_SRGB = ImageCms.createProfile("sRGB")
 
 
-def social_size(w: Optional[int], h: Optional[int]):
-    if not w or not h:
-        return None
-    scale = min(1.0, SOCIAL_EDGE / max(w, h))
-    return round(w * scale), round(h * scale)
+def load_srgb(path: Path) -> Image.Image:
+    """讀預覽圖並轉成 sRGB（相機設 Adobe RGB 時，通訊軟體不認 ICC 會顏色發灰）。"""
+    with Image.open(path) as im:
+        icc = im.info.get("icc_profile")
+        img = im.convert("RGB")
+    if icc:
+        try:
+            src = ImageCms.ImageCmsProfile(io.BytesIO(icc))
+            img = ImageCms.profileToProfile(img, src, _SRGB, outputMode="RGB")
+        except (ImageCms.PyCMSError, OSError):
+            pass
+    return img
+
+
+def _cover(img: Image.Image, size, centering=(0.5, 0.38)) -> Image.Image:
+    """填滿 size 並裁掉多餘部分；垂直方向偏上裁，人像比較不會切到頭。"""
+    return ImageOps.fit(img, size, Image.LANCZOS, centering=centering)
+
+
+def og_card_single(sha: str) -> Image.Image:
+    """單張：整張照片完整放中間，左右（或上下）用同一張模糊壓暗當背景，直幅也不會被裁頭。"""
+    img = load_srgb(preview_path(sha))
+    bg = _cover(img, OG_SIZE).filter(ImageFilter.GaussianBlur(28))
+    bg = ImageEnhance.Brightness(bg).enhance(0.45)
+    fg = img.copy()
+    fg.thumbnail(OG_SIZE, Image.LANCZOS)
+    bg.paste(fg, ((OG_SIZE[0] - fg.width) // 2, (OG_SIZE[1] - fg.height) // 2))
+    return bg
+
+
+def og_card_collage(rows) -> Image.Image:
+    """相簿：最高分的幾張並排，每格寬度依照片比例分配（直幅窄、橫幅寬），盡量少裁。"""
+    gap = 6
+    W, H = OG_SIZE
+    ars = [(r["width"] / r["height"]) if r["width"] and r["height"] else 1.5 for r in rows]
+    usable = W - gap * (len(rows) - 1)
+    widths = [round(usable * a / sum(ars)) for a in ars]
+    widths[-1] = usable - sum(widths[:-1])
+    card = Image.new("RGB", OG_SIZE, (17, 18, 20))
+    x = 0
+    for r, w in zip(rows, widths):
+        card.paste(_cover(load_srgb(preview_path(r["sha256"])), (w, H)), (x, 0))
+        x += w + gap
+    return card
+
+
+def og_name(shas) -> str:
+    """卡片檔名 = 內容指紋：前幾名換了照片，網址就跟著換。"""
+    return hashlib.sha256((OG_VERSION + ":" + ",".join(shas)).encode()).hexdigest()[:20]
+
+
+def og_file(name: str, build) -> Path:
+    path = DATA_DIR / "derived" / "og" / f"{name}.jpg"
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        build().save(tmp, "JPEG", quality=85, optimize=True, progressive=True)
+        os.replace(tmp, path)
+    return path
 
 
 # ---------- 權限 ----------
@@ -445,8 +490,6 @@ def serve(row, kind: str, cache: dict = IMMUTABLE):
         return FileResponse(thumb_path(sha), media_type="image/webp", headers=cache)
     if kind == "p":
         return FileResponse(preview_path(sha), media_type="image/jpeg", headers=cache)
-    if kind == "s":
-        return FileResponse(ensure_social(sha), media_type="image/jpeg", headers=cache)
     if kind == "o":
         return FileResponse(original_path(sha), media_type="image/jpeg", filename=row["filename"],
                             headers=cache)
@@ -578,19 +621,42 @@ def date_text(d: Optional[str]) -> str:
     return d.replace("-", "/") if d else ""
 
 
+def album_top(con, album_id: int):
+    return album_photos(con, album_id)[:OG_COLLAGE]
+
+
+@app.get("/og/a/{key}/{name}.jpg")
+def album_og(key: str, name: str):
+    with db() as con:
+        album = album_by_key(con, key)
+        top = album_top(con, album["id"])
+    if not top or name != og_name([r["sha256"] for r in top]):
+        raise HTTPException(404)
+    return FileResponse(og_file(name, lambda: og_card_collage(top)), media_type="image/jpeg", headers=IMMUTABLE)
+
+
+@app.get("/og/p/{pk}/{name}.jpg")
+def photo_og(pk: str, name: str):
+    with db() as con:
+        r = photo_by_key(con, pk)
+    if name != og_name([r["sha256"]]):
+        raise HTTPException(404)
+    return FileResponse(og_file(name, lambda: og_card_single(r["sha256"])), media_type="image/jpeg",
+                        headers=IMMUTABLE)
+
+
 @app.get("/a/{key}")
 def album_page(key: str, request: Request):
     with db() as con:
         album = con.execute("SELECT * FROM albums WHERE share_key=?", (key,)).fetchone()
-        top = album_photos(con, album["id"])[:1] if album else []
+        top = album_top(con, album["id"]) if album else []
         count = con.execute("SELECT COUNT(*) FROM photos WHERE album_id=?", (album["id"],)).fetchone()[0] \
             if album else 0
     if not album:
         return spa(request, "找不到相簿", path=f"/a/{key}")
     desc = " · ".join(x for x in (date_text(album["shoot_date"]), f"{count} 張照片") if x)
-    img = f"/media/{key}/s/{top[0]['sha256']}" if top else None
-    size = social_size(top[0]["width"], top[0]["height"]) if top else None
-    return spa(request, album["title"], desc, img, size, f"/a/{key}")
+    img = f"/og/a/{key}/{og_name([r['sha256'] for r in top])}.jpg" if top else None
+    return spa(request, album["title"], desc, img, OG_SIZE if top else None, f"/a/{key}")
 
 
 @app.get("/p/{pk}")
@@ -600,8 +666,9 @@ def photo_page(pk: str, request: Request):
             r = photo_by_key(con, pk)
         except HTTPException:
             return spa(request, "找不到照片", path=f"/p/{pk}")
-    desc = " · ".join(x for x in (date_text(r["shoot_date"]), r["filename"]) if x)
-    return spa(request, r["album_title"], desc, f"/m/{pk}/s", social_size(r["width"], r["height"]), f"/p/{pk}")
+    stars = "★" * r["stars"] if r["stars"] else ""
+    desc = " · ".join(x for x in (date_text(r["shoot_date"]), "單張照片", stars) if x)
+    return spa(request, r["album_title"], desc, f"/og/p/{pk}/{og_name([r['sha256']])}.jpg", OG_SIZE, f"/p/{pk}")
 
 
 @app.get("/")

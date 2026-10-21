@@ -95,7 +95,7 @@ LXC 磁碟不夠時可在 Proxmox 加大（只能加大）：`pct resize <CTID> 
 
 ### 更新到新版
 
-重跑即為更新，token、照片、設定都會保留：
+重跑即為更新。**已上傳的照片、縮圖、資料庫與分享連結都不會動**：更新只替換 `/opt/photoreturn` 裡的程式，資料在 `/var/lib/photoreturn`（或你設定的 `PHOTORETURN_DATA`）完全不碰；資料庫只會加欄位、不刪資料；token、網站名稱、資料位置與你自己加進 `/etc/photoreturn.env` 的設定都會保留。
 
 - 安裝法 A：`git pull` 後重跑第 2 步那一行。
 - 安裝法 B：在 Proxmox Shell（`<CTID>` 換成容器編號）：
@@ -171,7 +171,10 @@ ingest/ingest.sh --list                      # 所有相簿進度與返圖網址
 - **整本相簿** `/a/<相簿碼>`：右上「下載」可選 JPG / RAW / JPG+RAW（依目前的星等篩選）。
 - **單張分享** `/p/<單張碼>`：大圖檢視裡按「分享」，手機開系統分享選單，桌機複製連結。拿到連結的人只看得到這一張，進不去整本相簿。
 - **單張下載**：大圖檢視與單張頁都有 JPG、RAW 兩顆按鈕（沒有 RAW 的照片只顯示 JPG）。
-- **通訊軟體縮圖**：`/a/`、`/p/` 頁面由後端注入 Open Graph 標籤，預覽圖是 1200px JPG（相簿用星等最高的那張）。
+- **通訊軟體縮圖**：`/a/`、`/p/` 頁面由後端注入 Open Graph 標籤，預覽卡片固定 1200×630（LINE、FB、Discord 的顯示比例，不會被亂裁）：
+  - 相簿：星等最高的前 3 張並排拼圖，每格寬度依照片比例分配、偏上裁切保住臉。
+  - 單張：整張照片完整置中，背景用同一張模糊壓暗，直幅也不會被裁頭。
+  - 卡片網址含內容指紋，前幾名換了照片網址就換，通訊軟體會重抓新縮圖。
   要讓 LINE / Telegram / Messenger 抓得到縮圖，網站必須能從外網連到，且 `PHOTORETURN_PUBLIC_URL` 要設成對外網址（例如 `https://photos.example.com`）。
 - **RAW 上傳**：ingest 預設會把同名 RAW 一起傳到返圖站（`.env` 的 `UPLOAD_RAW=0` 或 `--no-raw` 可關掉；NAS 一律備份 RAW）。
 
@@ -186,8 +189,9 @@ ingest/ingest.sh --list                      # 所有相簿進度與返圖網址
 | GET | `/api/share/{key}` | 相簿內容，已依星等 → 美學分數排序 |
 | GET | `/api/share/{key}/zip?min_stars=N&fmt=jpg\|raw\|all` | 串流打包下載 |
 | GET | `/api/photo/{pk}` | 單張分享的資料 |
-| GET | `/media/{key}/{t\|p\|s\|o\|r}/{sha}` | 縮圖 / 預覽 / 社群預覽 / JPG / RAW |
-| GET | `/m/{pk}/{t\|p\|s\|o\|r}` | 單張分享頁用的同上 |
+| GET | `/media/{key}/{t\|p\|o\|r}/{sha}` | 縮圖 / 預覽 / JPG / RAW |
+| GET | `/m/{pk}/{t\|p\|o\|r}` | 單張分享頁用的同上 |
+| GET | `/og/a/{key}/{指紋}.jpg`、`/og/p/{pk}/{指紋}.jpg` | 通訊軟體預覽卡片（1200×630） |
 
 ## 前端（web/，Vue 3 + Vite）
 
