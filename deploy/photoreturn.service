@@ -1,0 +1,16 @@
+[Unit]
+Description=PhotoReturn 返圖站
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=photoreturn
+Group=photoreturn
+WorkingDirectory=/opt/photoreturn/server
+EnvironmentFile=/etc/photoreturn.env
+# 不信任 X-Forwarded-For：上傳的區網限制要看真正的連線來源
+ExecStart=/opt/photoreturn/server/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port ${PHOTORETURN_PORT} --workers 2 --no-proxy-headers
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

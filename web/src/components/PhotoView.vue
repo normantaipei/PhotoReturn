@@ -1,0 +1,39 @@
+<script setup>
+// 單張分享頁：只看得到這一張，沒有回到整本相簿的連結
+import { onMounted, ref } from "vue";
+import { fetchPhoto, photoMediaUrl } from "../lib/api.js";
+import DownloadButtons from "./DownloadButtons.vue";
+
+const props = defineProps({ photoKey: { type: String, required: true } });
+const photo = ref(null);
+const error = ref("");
+const loaded = ref(false);
+
+onMounted(async () => {
+  try {
+    photo.value = await fetchPhoto(props.photoKey);
+    document.title = `${photo.value.album_title} · 返圖`;
+  } catch (e) {
+    error.value = e.message;
+  }
+});
+</script>
+
+<template>
+  <div class="single">
+    <header class="single-head">
+      <h1>{{ error || photo?.album_title || "載入中…" }}</h1>
+      <p v-if="photo" class="muted">{{ [photo.shoot_date, photo.name].filter(Boolean).join(" · ") }}</p>
+    </header>
+    <figure v-if="photo" class="single-photo">
+      <img
+        :src="photoMediaUrl(photoKey, 'p')" :alt="photo.name" :width="photo.w" :height="photo.h"
+        :class="{ loaded }" @load="loaded = true"
+      >
+    </figure>
+    <DownloadButtons
+      v-if="photo" class="single-actions" :photo="{ ...photo, pk: photoKey }" :share-title="photo.album_title"
+      :jpg-url="photoMediaUrl(photoKey, 'o')" :raw-url="photoMediaUrl(photoKey, 'r')"
+    />
+  </div>
+</template>
