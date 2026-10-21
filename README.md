@@ -36,7 +36,16 @@ cd PhotoReturn
 
 ## 安裝後端 + 前端（LXC，一行）
 
-1. Proxmox 建一台 Debian 12 LXC（unprivileged 即可，1–2 核、1GB RAM；照片磁碟要夠大，可另外掛一顆 mount point 到 `/var/lib/photoreturn`）。
+1. 建一台 Debian 12 LXC。在 Mac 上一行搞定（`<PVE_IP>` 換成 Proxmox 主機 IP；會自動放入你的 SSH 公鑰，完成後印出 LXC 的 IP 與下一步指令）：
+
+```bash
+ssh root@<PVE_IP> "bash -s -- --ssh-key '$(cat ~/.ssh/id_ed25519.pub)'" < deploy/create-lxc.sh
+```
+
+   預設：下一個可用編號、unprivileged、2 核 / 1GB RAM / 64GB 磁碟（照片也放這裡）、`vmbr0` DHCP、開機自動啟動。
+   可加參數調整，例如照片多就 `--disk 500`；其他：`--id`、`--hostname`、`--cores`、`--memory`、`--storage`、`--bridge`（見腳本開頭說明）。
+   已經有 LXC 的話跳過這步。
+
 2. 在 Mac 上打包安裝檔（會順便 build 前端）：
 
 ```bash
