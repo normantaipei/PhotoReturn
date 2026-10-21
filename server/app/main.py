@@ -499,7 +499,7 @@ def serve(row, kind: str, cache: dict = IMMUTABLE):
     raise HTTPException(404)
 
 
-@app.get("/media/{key}/{kind}/{sha}")
+@app.api_route("/media/{key}/{kind}/{sha}", methods=["GET", "HEAD"])
 def album_media(key: str, kind: str, sha: str):
     if not SHA_RE.match(sha):
         raise HTTPException(404)
@@ -512,7 +512,7 @@ def album_media(key: str, kind: str, sha: str):
     return serve(row, kind)
 
 
-@app.get("/m/{pk}/{kind}")
+@app.api_route("/m/{pk}/{kind}", methods=["GET", "HEAD"])
 def photo_media(pk: str, kind: str):
     with db() as con:
         row = photo_by_key(con, pk)
@@ -580,6 +580,7 @@ def share_zip(key: str, min_stars: int = 0, fmt: str = "jpg"):
 
 
 # ---------- 前端（web/ 的 Vue build 產物）＋ Open Graph ----------
+# 頁面與圖片路由都接受 HEAD：有些通訊軟體的爬蟲會先送 HEAD 探路，回 405 就直接放棄抓預覽
 
 HOST_RE = re.compile(r"^[A-Za-z0-9.\-]{1,253}(:\d{1,5})?$")
 
@@ -640,7 +641,7 @@ def album_top(con, album_id: int):
     return album_photos(con, album_id)[:OG_COLLAGE]
 
 
-@app.get("/og/a/{key}/{name}.jpg")
+@app.api_route("/og/a/{key}/{name}.jpg", methods=["GET", "HEAD"])
 def album_og(key: str, name: str):
     with db() as con:
         album = album_by_key(con, key)
@@ -650,7 +651,7 @@ def album_og(key: str, name: str):
     return FileResponse(og_file(name, lambda: og_card_collage(top)), media_type="image/jpeg", headers=IMMUTABLE)
 
 
-@app.get("/og/p/{pk}/{name}.jpg")
+@app.api_route("/og/p/{pk}/{name}.jpg", methods=["GET", "HEAD"])
 def photo_og(pk: str, name: str):
     with db() as con:
         r = photo_by_key(con, pk)
@@ -660,7 +661,7 @@ def photo_og(pk: str, name: str):
                         headers=IMMUTABLE)
 
 
-@app.get("/a/{key}")
+@app.api_route("/a/{key}", methods=["GET", "HEAD"])
 def album_page(key: str, request: Request):
     with db() as con:
         album = con.execute("SELECT * FROM albums WHERE share_key=?", (key,)).fetchone()
@@ -674,7 +675,7 @@ def album_page(key: str, request: Request):
     return spa(request, album["title"], desc, img, OG_SIZE if top else None, f"/a/{key}")
 
 
-@app.get("/p/{pk}")
+@app.api_route("/p/{pk}", methods=["GET", "HEAD"])
 def photo_page(pk: str, request: Request):
     with db() as con:
         try:
@@ -686,17 +687,17 @@ def photo_page(pk: str, request: Request):
     return spa(request, r["album_title"], desc, f"/og/p/{pk}/{og_name([r['sha256']])}.jpg", OG_SIZE, f"/p/{pk}")
 
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 def home(request: Request):
     return spa(request)
 
 
-@app.get("/favicon.svg")
+@app.api_route("/favicon.svg", methods=["GET", "HEAD"])
 def favicon():
     return FileResponse(WEB_DIR / "favicon.svg")
 
 
-@app.get("/healthz")
+@app.api_route("/healthz", methods=["GET", "HEAD"])
 def healthz():
     return {"ok": True, "free_gb": round(shutil.disk_usage(DATA_DIR).free / 1e9, 1)}
 
