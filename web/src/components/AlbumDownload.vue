@@ -2,6 +2,7 @@
 // 整本下載：JPG / RAW / JPG+RAW，依目前的星等篩選
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { fmtBytes, zipUrl } from "../lib/api.js";
+import { t } from "../lib/i18n.js";
 
 const props = defineProps({ shareKey: String, photos: Array, minStars: Number });
 const open = ref(false);
@@ -28,7 +29,7 @@ onBeforeUnmount(() => { document.removeEventListener("click", onDoc); removeEven
 <template>
   <div ref="root" class="dl-menu">
     <button class="btn" :aria-expanded="open" @click="open = !open">
-      ⬇ {{ minStars ? `下載 ★${minStars}+` : "下載全部" }}（{{ photos.length }}）<span class="caret">▾</span>
+      ⬇ {{ minStars ? t("downloadStars", { n: minStars }) : t("downloadAll") }} ({{ photos.length }})<span class="caret">▾</span>
     </button>
     <div v-if="open" class="dl-pop" role="menu">
       <a
@@ -36,9 +37,9 @@ onBeforeUnmount(() => { document.removeEventListener("click", onDoc); removeEven
         download @click="open = false"
       >
         <strong>{{ o.label }}</strong>
-        <span class="muted">{{ o.count }} 個檔案 · {{ fmtBytes(o.bytes) }}</span>
+        <span class="muted">{{ t("files", { n: o.count }) }} · {{ fmtBytes(o.bytes) }}</span>
       </a>
-      <p v-if="!rawCount" class="muted note">這本相簿沒有 RAW 檔</p>
+      <p v-if="!rawCount" class="muted note">{{ t("noRaw") }}</p>
     </div>
   </div>
 </template>

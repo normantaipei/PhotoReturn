@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, watch } from "vue";
 import { mediaUrl, starText } from "../lib/api.js";
+import { t } from "../lib/i18n.js";
 import DownloadButtons from "./DownloadButtons.vue";
 
 const props = defineProps({ photos: Array, index: Number, shareKey: String, albumTitle: String });
@@ -47,11 +48,11 @@ function onTouchEnd(e) {
 
 <template>
   <div
-    v-if="photo" class="lb" role="dialog" aria-modal="true" aria-label="照片檢視"
+    v-if="photo" class="lb" role="dialog" aria-modal="true" :aria-label="t('viewer')"
     @click.self="close" @touchstart.passive="onTouchStart" @touchend="onTouchEnd"
   >
-    <button class="lb-close" aria-label="關閉" @click="close">✕</button>
-    <button class="lb-nav lb-prev" aria-label="上一張" @click="step(-1)">‹</button>
+    <button class="lb-close" :aria-label="t('close')" @click="close">✕</button>
+    <button class="lb-nav lb-prev" :aria-label="t('prev')" @click="step(-1)">‹</button>
     <figure @click.self="close">
       <img :key="photo.sha" :src="mediaUrl(shareKey, 'p', photo.sha)" :alt="photo.name">
       <figcaption>
@@ -66,6 +67,6 @@ function onTouchEnd(e) {
         />
       </figcaption>
     </figure>
-    <button class="lb-nav lb-next" aria-label="下一張" @click="step(1)">›</button>
+    <button class="lb-nav lb-next" :aria-label="t('next')" @click="step(1)">›</button>
   </div>
 </template>

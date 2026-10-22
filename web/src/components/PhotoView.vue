@@ -3,11 +3,12 @@
 import { onMounted, ref } from "vue";
 import { pageTitle } from "../lib/site.js";
 import { fetchPhoto, photoMediaUrl } from "../lib/api.js";
+import { errorText, t } from "../lib/i18n.js";
 import DownloadButtons from "./DownloadButtons.vue";
 
 const props = defineProps({ photoKey: { type: String, required: true } });
 const photo = ref(null);
-const error = ref("");
+const error = ref(null);
 const loaded = ref(false);
 
 onMounted(async () => {
@@ -15,7 +16,7 @@ onMounted(async () => {
     photo.value = await fetchPhoto(props.photoKey);
     document.title = pageTitle(photo.value.album_title);
   } catch (e) {
-    error.value = e.message;
+    error.value = e;
   }
 });
 </script>
@@ -23,7 +24,7 @@ onMounted(async () => {
 <template>
   <div class="single">
     <header class="single-head">
-      <h1>{{ error || photo?.album_title || "載入中…" }}</h1>
+      <h1>{{ error ? errorText(error) : photo?.album_title || t("loading") }}</h1>
       <p v-if="photo" class="muted">{{ [photo.shoot_date, photo.name].filter(Boolean).join(" · ") }}</p>
     </header>
     <figure v-if="photo" class="single-photo">

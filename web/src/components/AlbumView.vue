@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { pageTitle } from "../lib/site.js";
 import { fetchAlbum } from "../lib/api.js";
 import { justify } from "../lib/justify.js";
+import { errorText, lang, t } from "../lib/i18n.js";
 import PhotoTile from "./PhotoTile.vue";
 import Lightbox from "./Lightbox.vue";
 import AlbumDownload from "./AlbumDownload.vue";
@@ -10,7 +11,7 @@ import AlbumDownload from "./AlbumDownload.vue";
 const props = defineProps({ shareKey: { type: String, required: true } });
 
 const album = ref(null);
-const error = ref("");
+const error = ref(null);
 const minStars = ref(0);
 const tag = ref(null);
 const lbIndex = ref(-1);
@@ -26,7 +27,7 @@ onMounted(async () => {
     album.value = await fetchAlbum(props.shareKey);
     document.title = pageTitle(album.value.title);
   } catch (e) {
-    error.value = e.message;
+    error.value = e;
   }
 });
 onBeforeUnmount(() => ro?.disconnect());
@@ -38,19 +39,20 @@ const starOptions = computed(() => {
   const counts = [0, 0, 0, 0, 0, 0];
   for (const p of photos.value) counts[p.stars || 0]++;
   const atLeast = (n) => counts.slice(n).reduce((a, b) => a + b, 0);
-  const opts = [{ value: 0, label: "全部", count: photos.value.length }];
+  const opts = [{ value: 0, label: t("all"), count: photos.value.length }];
   if (counts[5]) opts.push({ value: 5, label: "★5", count: counts[5] });
   for (const n of [4, 3]) {
-    if (atLeast(n) && atLeast(n) !== atLeast(n + 1)) opts.push({ value: n, label: `★${n} 以上`, count: atLeast(n) });
+    if (atLeast(n) && atLeast(n) !== atLeast(n + 1)) opts.push({ value: n, label: t("starsAtLeast", { n }), count: atLeast(n) });
   }
   return opts;
 });
 
-// 標籤：只取中文（Prism 中英並存），出現 2 次以上的前 14 個
+// 標籤：Prism 中英並存，中文介面取中文、英日文介面取英文；出現 2 次以上的前 14 個
 const topTags = computed(() => {
+  const wantCjk = lang.value === "zh";
   const freq = new Map();
   for (const p of photos.value) {
-    for (const t of p.tags) if (/[^\x00-\x7f]/.test(t)) freq.set(t, (freq.get(t) || 0) + 1);
+    for (const tg of p.tags) if (/[^\x00-\x7f]/.test(tg) === wantCjk) freq.set(tg, (freq.get(tg) || 0) + 1);
   }
   return [...freq].filter(([, c]) => c >= 2).sort((a, b) => b[1] - a[1]).slice(0, 14);
 });
@@ -80,6 +82,7 @@ const groups = computed(() => {
 });
 
 watch([minStars, tag], () => (lbIndex.value = -1));
+watch(lang, () => (tag.value = null)); // 換語言後標籤清單不同
 
 const toggleTag = (t) => (tag.value = tag.value === t ? null : t);
 </script>
@@ -87,16 +90,16 @@ const toggleTag = (t) => (tag.value = tag.value === t ? null : t);
 <template>
   <header class="top">
     <div>
-      <h1>{{ error || album?.title || "載入中…" }}</h1>
+      <h1>{{ error ? errorText(error) : album?.title || t("loading") }}</h1>
       <p v-if="album" class="muted">
-        {{ [album.shoot_date, `${visible.length} 張`, totalMB ? `${totalMB} MB` : ""].filter(Boolean).join(" · ") }}
+        {{ [album.shoot_date, t("photos", { n: visible.length }), totalMB ? `${totalMB} MB` : ""].filter(Boolean).join(" · ") }}
       </p>
     </div>
     <AlbumDownload v-if="album && visible.length" :share-key="shareKey" :photos="visible" :min-stars="minStars" />
   </header>
 
-  <nav v-if="album" class="filters" aria-label="篩選">
-    <div class="chips" role="group" aria-label="依星等">
+  <nav v-if="album" class="filters" :aria-label="t('filters')">
+    <div class="chips" role="group" :aria-label="t('byStars')">
       <button
         v-for="o in starOptions" :key="o.value" class="chip"
         :aria-pressed="minStars === o.value" @click="minStars = o.value"
@@ -104,7 +107,7 @@ const toggleTag = (t) => (tag.value = tag.value === t ? null : t);
         {{ o.label }}<span class="n">{{ o.count }}</span>
       </button>
     </div>
-    <div v-if="topTags.length" class="chips tags" role="group" aria-label="依標籤">
+    <div v-if="topTags.length" class="chips tags" role="group" :aria-label="t('byTags')">
       <button
         v-for="[t, c] in topTags" :key="t" class="chip"
         :aria-pressed="tag === t" @click="toggleTag(t)"
@@ -119,8 +122,8 @@ const toggleTag = (t) => (tag.value = tag.value === t ? null : t);
       <section v-for="g in groups" :key="g.stars">
         <h2 class="group-head">
           <span v-if="g.stars" class="stars">{{ "★".repeat(g.stars) }}</span>
-          <span v-else>未評分 ·</span>
-          {{ g.items.length }} 張
+          <span v-else>{{ t("unrated") }} ·</span>
+          {{ t("photos", { n: g.items.length }) }}
         </h2>
         <div v-for="(row, ri) in g.rows" :key="ri" class="row" :style="{ gap: `${layout.gap}px`, marginBottom: `${layout.gap}px` }">
           <PhotoTile
@@ -131,7 +134,7 @@ const toggleTag = (t) => (tag.value = tag.value === t ? null : t);
         </div>
       </section>
     </div>
-    <p v-if="album && !visible.length" class="muted center">沒有符合條件的照片</p>
+    <p v-if="album && !visible.length" class="muted center">{{ t("noMatch") }}</p>
   </main>
 
   <Lightbox v-model:index="lbIndex" :photos="visible" :share-key="shareKey" :album-title="album?.title" />

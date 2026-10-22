@@ -17,6 +17,8 @@ body {
   font: 15px/1.5 -apple-system, BlinkMacSystemFont, "PingFang TC", "Noto Sans TC", "Segoe UI", sans-serif;
   -webkit-font-smoothing: antialiased;
 }
+/* 日文介面優先用日文字型，漢字字形才不會變成中文寫法 */
+:lang(ja) body { font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", "Yu Gothic", "Segoe UI", sans-serif; }
 
 .muted { color: var(--muted); }
 .center { text-align: center; }
@@ -170,3 +172,16 @@ button.btn.small { font-size: 13px; }
   .lb figcaption { padding-bottom: 12px; gap: 10px; }
   .lb img { max-height: calc(100vh - 140px); max-height: calc(100dvh - 140px); }
 }
+
+/* ---------- 語言切換 ---------- */
+
+.lang-switch {
+  display: flex; justify-content: center; gap: 4px;
+  padding: 28px 16px calc(28px + env(safe-area-inset-bottom));
+}
+.lang-switch button {
+  border: 0; background: transparent; color: var(--muted);
+  padding: 4px 10px; border-radius: 6px; font: inherit; font-size: 13px; cursor: pointer;
+}
+.lang-switch button:hover { color: var(--text); }
+.lang-switch button[aria-pressed="true"] { color: var(--text); background: var(--surface-2); }

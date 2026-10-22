@@ -10,7 +10,7 @@ const loaded = ref(false);
 <template>
   <button
     class="tile" :style="{ width: `${w}px`, height: `${h}px` }"
-    :aria-label="`${photo.name}，${starText(photo.stars)}`" @click="$emit('open')"
+    :aria-label="`${photo.name}, ${starText(photo.stars)}`" @click="$emit('open')"
   >
     <img
       :src="mediaUrl(shareKey, 't', photo.sha)" alt="" loading="lazy" decoding="async"

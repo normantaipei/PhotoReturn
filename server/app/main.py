@@ -602,6 +602,28 @@ def base_url(request: Request) -> str:
     return f"{proto}://{host}"
 
 
+# 分享卡片與 <html lang> 的語言：?lang= → Accept-Language → 中文（前端之後還會依使用者選擇切換）
+OG_TEXT = {
+    "zh": {"html": "zh-Hant", "album_nf": "找不到相簿", "photo_nf": "找不到照片",
+           "count": "{n} 張照片", "single": "單張照片"},
+    "en": {"html": "en", "album_nf": "Album not found", "photo_nf": "Photo not found",
+           "count": "{n} photos", "single": "Single photo"},
+    "ja": {"html": "ja", "album_nf": "アルバムが見つかりません", "photo_nf": "写真が見つかりません",
+           "count": "{n} 枚の写真", "single": "写真 1 枚"},
+}
+
+
+def req_lang(request: Request) -> str:
+    q = (request.query_params.get("lang") or "").lower()[:2]
+    if q in OG_TEXT:
+        return q
+    for part in request.headers.get("accept-language", "").split(","):
+        code = part.split(";")[0].strip().lower()[:2]
+        if code in OG_TEXT:
+            return code
+    return "zh"
+
+
 def spa(request: Request, title: Optional[str] = None, description: str = "", image: Optional[str] = None,
         size=None, path: str = ""):
     index = WEB_DIR / "index.html"
@@ -628,9 +650,10 @@ def spa(request: Request, title: Optional[str] = None, description: str = "", im
             tags += [f'<meta property="og:image:width" content="{size[0]}">',
                      f'<meta property="og:image:height" content="{size[1]}">']
     page = (index.read_text(encoding="utf-8")
+            .replace('<html lang="zh-Hant">', f'<html lang="{OG_TEXT[req_lang(request)]["html"]}">', 1)
             .replace('<meta name="site-name" content="返圖">', f'<meta name="site-name" content="{e(SITE_NAME)}">', 1)
             .replace("<title>返圖</title>", f"<title>{e(title)}</title>\n  " + "\n  ".join(tags), 1))
-    return HTMLResponse(page, headers={"Cache-Control": "no-cache"})
+    return HTMLResponse(page, headers={"Cache-Control": "no-cache", "Vary": "Accept-Language"})
 
 
 def date_text(d: Optional[str]) -> str:
@@ -668,22 +691,24 @@ def album_page(key: str, request: Request):
         top = album_top(con, album["id"]) if album else []
         count = con.execute("SELECT COUNT(*) FROM photos WHERE album_id=?", (album["id"],)).fetchone()[0] \
             if album else 0
+    tx = OG_TEXT[req_lang(request)]
     if not album:
-        return spa(request, "找不到相簿", path=f"/a/{key}")
-    desc = " · ".join(x for x in (date_text(album["shoot_date"]), f"{count} 張照片") if x)
+        return spa(request, tx["album_nf"], path=f"/a/{key}")
+    desc = " · ".join(x for x in (date_text(album["shoot_date"]), tx["count"].format(n=count)) if x)
     img = f"/og/a/{key}/{og_name([r['sha256'] for r in top])}.jpg" if top else None
     return spa(request, album["title"], desc, img, OG_SIZE if top else None, f"/a/{key}")
 
 
 @app.api_route("/p/{pk}", methods=["GET", "HEAD"])
 def photo_page(pk: str, request: Request):
+    tx = OG_TEXT[req_lang(request)]
     with db() as con:
         try:
             r = photo_by_key(con, pk)
         except HTTPException:
-            return spa(request, "找不到照片", path=f"/p/{pk}")
+            return spa(request, tx["photo_nf"], path=f"/p/{pk}")
     stars = "★" * r["stars"] if r["stars"] else ""
-    desc = " · ".join(x for x in (date_text(r["shoot_date"]), "單張照片", stars) if x)
+    desc = " · ".join(x for x in (date_text(r["shoot_date"]), tx["single"], stars) if x)
     return spa(request, r["album_title"], desc, f"/og/p/{pk}/{og_name([r['sha256']])}.jpg", OG_SIZE, f"/p/{pk}")
 
 

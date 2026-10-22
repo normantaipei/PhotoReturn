@@ -1,4 +1,5 @@
 import { ref } from "vue";
+import { t } from "./i18n.js";
 
 export const toast = ref("");
 let timer;
@@ -36,8 +37,8 @@ export async function sharePhoto(pk, title) {
   }
   try {
     await copyText(url);
-    showToast("已複製這張照片的分享連結");
+    showToast(t("linkCopied"));
   } catch {
-    window.prompt("複製這張照片的分享連結：", url);
+    window.prompt(t("copyLinkPrompt"), url);
   }
 }
