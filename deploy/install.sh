@@ -150,7 +150,7 @@ echo
 echo "Mac 端的其他設定（第一次可一起加在上面那行，--save 會記住）："
 echo "  --staging <資料夾>    暫存資料夾，預設 ~/PhotoReturnStaging"
 echo "  --nas smb://帳號@NAS_IP/共用資料夾/子資料夾    NAS 備份（不加就不備份）"
-echo "  --album <名稱>        相簿名稱（不加會在插卡後詢問，預設拍攝日期）"
+echo "  --album <名稱>        相簿名稱（不加就用拍攝日期，如 2026_10_23）"
 CMD
   chmod 700 /usr/local/bin/photoreturn-cmd
 
