@@ -44,3 +44,6 @@ server/data/
 
 # 伺服器設定（含 token）
 ingest/servers/
+
+# 人臉辨識模型（第一次用 --faces 時自動下載）
+ingest/models/

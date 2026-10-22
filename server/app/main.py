@@ -5,6 +5,7 @@ PhotoReturn 返圖站 — 後端
 - 觀看端：
     /a/<相簿分享碼>   整本相簿，依 Prism 星等排序
     /p/<單張分享碼>   只看得到這一張（分享給別人不會曝光整本相簿）
+    /f/<人物分享碼>   只看得到某一個人的照片（人臉分組在 Mac 端做，這裡只存分組結果，不存人臉特徵）
   兩種頁面都由後端注入 Open Graph 標籤，貼到 LINE / Telegram / Messenger / Discord 會有縮圖
 - 原始檔以內容 SHA-256 存放；縮圖（webp）與預覽（jpg）在上傳時產生，社群預覽圖第一次被抓時產生
 """
@@ -46,6 +47,7 @@ UPLOAD_NETS = [ipaddress.ip_network(n.strip(), strict=False) for n in os.environ
 WEB_DIR = Path(os.environ.get("PHOTORETURN_WEB", Path(__file__).resolve().parents[2] / "web" / "dist"))
 
 THUMB_EDGE = 800      # 格狀列表用，長邊
+FACE_EDGE = 160       # 人物頭像
 PREVIEW_EDGE = 2048   # 燈箱大圖用，長邊
 OG_SIZE = (1200, 630)  # 通訊軟體 / 社群預覽卡片：LINE、FB、Discord 都以 1.91:1 顯示，照這個比例做就不會被亂裁
 OG_COLLAGE = 3         # 相簿預覽拼幾張（星等最高的前幾張）
@@ -88,6 +90,21 @@ CREATE TABLE IF NOT EXISTS photos (
     UNIQUE (album_id, photo_id)
 );
 CREATE INDEX IF NOT EXISTS photos_album ON photos(album_id);
+CREATE TABLE IF NOT EXISTS people (
+    id INTEGER PRIMARY KEY,
+    album_id INTEGER NOT NULL REFERENCES albums(id),
+    share_key TEXT UNIQUE NOT NULL,
+    label TEXT,                  -- 之後可命名；NULL 時前端顯示「人物 N」
+    ord INTEGER NOT NULL,        -- 1 起算，張數多的在前
+    cover_photo INTEGER REFERENCES photos(id),
+    cover_box TEXT               -- 代表照上臉的位置 [x, y, w, h]（0~1，左上原點）
+);
+CREATE TABLE IF NOT EXISTS person_photos (
+    person_id INTEGER NOT NULL REFERENCES people(id),
+    photo_id INTEGER NOT NULL REFERENCES photos(id),
+    PRIMARY KEY (person_id, photo_id)
+);
+CREATE INDEX IF NOT EXISTS people_album ON people(album_id);
 """
 
 # 後來加的欄位：舊資料庫啟動時自動補上
@@ -436,6 +453,67 @@ def upload_raw(slug: str, photo_id: str, request: Request, file: UploadFile = Fi
     return {"sha256": sha, "bytes": size}
 
 
+class PersonCover(BaseModel):
+    photo_id: str
+    box: list[float]
+
+
+class PersonIn(BaseModel):
+    photos: list[str]
+    cover: Optional[PersonCover] = None
+
+
+class PeopleIn(BaseModel):
+    people: list[PersonIn]
+
+
+@app.put("/api/albums/{slug}/people")
+def upload_people(slug: str, body: PeopleIn, request: Request, authorization: Optional[str] = Header(None)):
+    """整本相簿的人物分組（Mac 端每次重新分群後整包送來）。
+    分享碼與名稱沿用照片重疊最多的舊分組，已經發出去的人物連結不會因為多插一張卡就失效。"""
+    require_uploader(request, authorization)
+    with db() as con:
+        album = album_by_slug(con, slug)
+        ids = {r["photo_id"]: r["id"] for r in con.execute(
+            "SELECT id, photo_id FROM photos WHERE album_id=?", (album["id"],))}
+        old = {}
+        for r in con.execute("SELECT p.id, pp.photo_id FROM people p LEFT JOIN person_photos pp ON pp.person_id=p.id "
+                             "WHERE p.album_id=?", (album["id"],)):
+            old.setdefault(r["id"], set()).add(r["photo_id"])
+        used, kept = set(), []
+        for n, person in enumerate(body.people, 1):
+            photos = {ids[x] for x in person.photos if x in ids}
+            if not photos:
+                continue
+            best, best_j = None, 0.3  # 重疊比例（Jaccard）至少 0.3 才算同一個人
+            for pid, ps in old.items():
+                j = len(ps & photos) / len(ps | photos) if ps else 0
+                if pid not in used and j >= best_j:
+                    best, best_j = pid, j
+            cover = person.cover
+            cover_photo = ids.get(cover.photo_id) if cover else None
+            box = json.dumps([min(max(float(v), 0.0), 1.0) for v in cover.box[:4]]) \
+                if cover_photo and len(cover.box) >= 4 else None
+            if best is None:
+                cur = con.execute("INSERT INTO people (album_id, share_key, ord, cover_photo, cover_box) "
+                                  "VALUES (?,?,?,?,?)", (album["id"], new_key(), n, cover_photo, box))
+                best = cur.lastrowid
+            else:
+                con.execute("UPDATE people SET ord=?, cover_photo=?, cover_box=? WHERE id=?",
+                            (n, cover_photo, box, best))
+            used.add(best)
+            kept.append(best)
+            con.execute("DELETE FROM person_photos WHERE person_id=?", (best,))
+            con.executemany("INSERT INTO person_photos (person_id, photo_id) VALUES (?,?)",
+                            [(best, x) for x in photos])
+        for pid in set(old) - used:
+            con.execute("DELETE FROM person_photos WHERE person_id=?", (pid,))
+            con.execute("DELETE FROM people WHERE id=?", (pid,))
+        for n, pid in enumerate(kept, 1):  # 跳過空分組後重新編號
+            con.execute("UPDATE people SET ord=? WHERE id=?", (n, pid))
+    return {"people": len(kept)}
+
+
 # ---------- 觀看端 API ----------
 
 ORDER = "ORDER BY stars IS NULL, stars DESC, aesthetic IS NULL, aesthetic DESC, taken_at, filename"
@@ -455,12 +533,60 @@ def album_photos(con, album_id: int):
     return con.execute(f"SELECT * FROM photos WHERE album_id=? {ORDER}", (album_id,)).fetchall()
 
 
+def face_name(r) -> str:
+    """頭像檔名 = 代表照 + 臉的位置的指紋：換了代表照網址就跟著換。"""
+    return hashlib.sha256(f"{r['cover_sha']}:{r['cover_box']}".encode()).hexdigest()[:16]
+
+
+def person_json(r, count: int) -> dict:
+    return {"key": r["share_key"], "n": r["ord"], "label": r["label"], "count": count,
+            "face": f"/face/{r['share_key']}/{face_name(r)}.jpg" if r["cover_sha"] else None}
+
+
+PEOPLE_SQL = """SELECT pe.*, ph.sha256 AS cover_sha FROM people pe
+                LEFT JOIN photos ph ON ph.id=pe.cover_photo"""
+
+
 @app.get("/api/share/{key}")
 def share_album(key: str):
     with db() as con:
         album = album_by_key(con, key)
         rows = album_photos(con, album["id"])
-    return {"title": album["title"], "shoot_date": album["shoot_date"], "photos": [photo_json(r) for r in rows]}
+        people = con.execute(f"{PEOPLE_SQL} WHERE pe.album_id=? ORDER BY pe.ord", (album["id"],)).fetchall()
+        links = con.execute("SELECT pp.person_id, pp.photo_id FROM person_photos pp JOIN people pe "
+                            "ON pe.id=pp.person_id WHERE pe.album_id=?", (album["id"],)).fetchall()
+    key_of = {p["id"]: p["share_key"] for p in people}
+    of_photo, count = {}, {}
+    for l in links:
+        of_photo.setdefault(l["photo_id"], []).append(key_of[l["person_id"]])
+        count[l["person_id"]] = count.get(l["person_id"], 0) + 1
+    photos = [{**photo_json(r), "people": of_photo.get(r["id"], [])} for r in rows]
+    return {"title": album["title"], "shoot_date": album["shoot_date"], "photos": photos,
+            "people": [person_json(p, count.get(p["id"], 0)) for p in people]}
+
+
+def person_by_key(con, key: str):
+    row = con.execute(f"""{PEOPLE_SQL.replace("SELECT pe.*", "SELECT pe.*, a.title AS album_title, a.shoot_date")}
+                          JOIN albums a ON a.id=pe.album_id WHERE pe.share_key=?""", (key,)).fetchone()
+    if not row:
+        raise HTTPException(404, "人物不存在")
+    return row
+
+
+def person_photos(con, person_id: int):
+    return con.execute(f"""SELECT p.* FROM photos p JOIN person_photos pp ON pp.photo_id=p.id
+                           WHERE pp.person_id=? {ORDER}""",
+                       (person_id,)).fetchall()
+
+
+@app.get("/api/person/{key}")
+def share_person(key: str):
+    """人物分享：只回這個人的照片，不帶相簿分享碼，也不帶其他人物的分享碼。"""
+    with db() as con:
+        person = person_by_key(con, key)
+        rows = person_photos(con, person["id"])
+    return {"title": person["album_title"], "shoot_date": person["shoot_date"],
+            "person": person_json(person, len(rows)), "photos": [photo_json(r) for r in rows]}
 
 
 def photo_by_key(con, pk: str):
@@ -512,6 +638,48 @@ def album_media(key: str, kind: str, sha: str):
     return serve(row, kind)
 
 
+@app.api_route("/fm/{key}/{kind}/{sha}", methods=["GET", "HEAD"])
+def person_media(key: str, kind: str, sha: str):
+    """人物頁的圖片：只給得到屬於這個人的照片。"""
+    if not SHA_RE.match(sha):
+        raise HTTPException(404)
+    with db() as con:
+        row = con.execute("""SELECT p.* FROM photos p JOIN person_photos pp ON pp.photo_id=p.id
+                             JOIN people pe ON pe.id=pp.person_id WHERE pe.share_key=? AND p.sha256=?""",
+                          (key, sha)).fetchone()
+    if not row:
+        raise HTTPException(404)
+    return serve(row, kind)
+
+
+def face_crop(sha: str, box) -> Image.Image:
+    """從預覽圖裁出正方形頭像：以臉為中心、往外留一些頭髮與下巴。"""
+    img = load_srgb(preview_path(sha))
+    W, H = img.size
+    x, y, w, h = box
+    cx, cy = (x + w / 2) * W, (y + h / 2) * H
+    side = min(max(w * W, h * H) * 1.8, W, H)
+    left = min(max(cx - side / 2, 0), W - side)
+    top = min(max(cy - side / 2, 0), H - side)
+    return img.crop((round(left), round(top), round(left + side), round(top + side))).resize(
+        (FACE_EDGE, FACE_EDGE), Image.LANCZOS)
+
+
+@app.api_route("/face/{key}/{name}.jpg", methods=["GET", "HEAD"])
+def person_face(key: str, name: str):
+    with db() as con:
+        r = person_by_key(con, key)
+    if not r["cover_sha"] or name != face_name(r):
+        raise HTTPException(404)
+    path = DATA_DIR / "derived" / "faces" / f"{name}.jpg"
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        face_crop(r["cover_sha"], json.loads(r["cover_box"])).save(tmp, "JPEG", quality=85)
+        os.replace(tmp, path)
+    return FileResponse(path, media_type="image/jpeg", headers=IMMUTABLE)
+
+
 @app.api_route("/m/{pk}/{kind}", methods=["GET", "HEAD"])
 def photo_media(pk: str, kind: str):
     with db() as con:
@@ -547,14 +715,11 @@ def _zip_stream(items):
     yield bytes(sink.buf)
 
 
-@app.get("/api/share/{key}/zip")
-def share_zip(key: str, min_stars: int = 0, fmt: str = "jpg"):
+def zip_response(title: str, rows, min_stars: int, fmt: str):
     """fmt：jpg / raw / all（JPG + RAW）。沒有 RAW 的照片在 raw 模式下略過。"""
     if fmt not in ("jpg", "raw", "all"):
         raise HTTPException(400, "fmt 只能是 jpg / raw / all")
-    with db() as con:
-        album = album_by_key(con, key)
-        rows = [r for r in album_photos(con, album["id"]) if (r["stars"] or 0) >= min_stars]
+    rows = [r for r in rows if (r["stars"] or 0) >= min_stars]
 
     used, items = set(), []
 
@@ -573,10 +738,26 @@ def share_zip(key: str, min_stars: int = 0, fmt: str = "jpg"):
     if not items:
         raise HTTPException(404, "沒有符合條件的檔案")
     label = {"jpg": "", "raw": "_RAW", "all": "_JPG+RAW"}[fmt]
-    zipname = album["title"] + (f"_{min_stars}star" if min_stars else "") + label + ".zip"
+    zipname = title + (f"_{min_stars}star" if min_stars else "") + label + ".zip"
     return StreamingResponse(
         _zip_stream(items), media_type="application/zip",
         headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(zipname)}"})
+
+
+@app.get("/api/share/{key}/zip")
+def share_zip(key: str, min_stars: int = 0, fmt: str = "jpg"):
+    with db() as con:
+        album = album_by_key(con, key)
+        rows = album_photos(con, album["id"])
+    return zip_response(album["title"], rows, min_stars, fmt)
+
+
+@app.get("/api/person/{key}/zip")
+def person_zip(key: str, min_stars: int = 0, fmt: str = "jpg"):
+    with db() as con:
+        person = person_by_key(con, key)
+        rows = person_photos(con, person["id"])
+    return zip_response(f"{person['album_title']}_{person['label'] or person['ord']}", rows, min_stars, fmt)
 
 
 # ---------- 前端（web/ 的 Vue build 產物）＋ Open Graph ----------
@@ -605,11 +786,11 @@ def base_url(request: Request) -> str:
 # 分享卡片與 <html lang> 的語言：?lang= → Accept-Language → 中文（前端之後還會依使用者選擇切換）
 OG_TEXT = {
     "zh": {"html": "zh-Hant", "album_nf": "找不到相簿", "photo_nf": "找不到照片",
-           "count": "{n} 張照片", "single": "單張照片"},
+           "count": "{n} 張照片", "single": "單張照片", "person_nf": "找不到人物"},
     "en": {"html": "en", "album_nf": "Album not found", "photo_nf": "Photo not found",
-           "count": "{n} photos", "single": "Single photo"},
+           "count": "{n} photos", "single": "Single photo", "person_nf": "Person not found"},
     "ja": {"html": "ja", "album_nf": "アルバムが見つかりません", "photo_nf": "写真が見つかりません",
-           "count": "{n} 枚の写真", "single": "写真 1 枚"},
+           "count": "{n} 枚の写真", "single": "写真 1 枚", "person_nf": "人物が見つかりません"},
 }
 
 
@@ -697,6 +878,30 @@ def album_page(key: str, request: Request):
     desc = " · ".join(x for x in (date_text(album["shoot_date"]), tx["count"].format(n=count)) if x)
     img = f"/og/a/{key}/{og_name([r['sha256'] for r in top])}.jpg" if top else None
     return spa(request, album["title"], desc, img, OG_SIZE if top else None, f"/a/{key}")
+
+
+@app.api_route("/og/f/{key}/{name}.jpg", methods=["GET", "HEAD"])
+def person_og(key: str, name: str):
+    with db() as con:
+        top = person_photos(con, person_by_key(con, key)["id"])[:OG_COLLAGE]
+    if not top or name != og_name([r["sha256"] for r in top]):
+        raise HTTPException(404)
+    return FileResponse(og_file(name, lambda: og_card_collage(top)), media_type="image/jpeg", headers=IMMUTABLE)
+
+
+@app.api_route("/f/{key}", methods=["GET", "HEAD"])
+def person_page(key: str, request: Request):
+    tx = OG_TEXT[req_lang(request)]
+    with db() as con:
+        try:
+            person = person_by_key(con, key)
+        except HTTPException:
+            return spa(request, tx["person_nf"], path=f"/f/{key}")
+        rows = person_photos(con, person["id"])
+    top = rows[:OG_COLLAGE]
+    desc = " · ".join(x for x in (date_text(person["shoot_date"]), tx["count"].format(n=len(rows))) if x)
+    img = f"/og/f/{key}/{og_name([r['sha256'] for r in top])}.jpg" if top else None
+    return spa(request, person["album_title"], desc, img, OG_SIZE if top else None, f"/f/{key}")
 
 
 @app.api_route("/p/{pk}", methods=["GET", "HEAD"])

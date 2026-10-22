@@ -182,6 +182,17 @@ ingest/ingest.sh --resume <相簿>               # 自動沿用這本相簿上�
 - **星等**：Prism 的美學分數用 `RATING_THRESHOLDS` 切成 1~5 星，預設 `0,0.4,0.55,0.7`（Prism README 給 cos 的建議值）。
 - 標籤直接引用 `PRISM_DIR` 的 `vision_tagger.py`，改 Prism 的 `tag_map.json` 這邊也會跟著生效。
 
+### 人臉分組（實驗中）
+
+`--faces`（或 `.env` 的 `FACES=1`）會在標籤之後把整本相簿的人臉分群，返圖頁多一排人物頭像可以篩選，每個人也有自己的分享連結 `/f/<人物碼>`（只看得到有自己的照片）。
+
+- **流程**：macOS Vision 找臉與五官 → 對齊成 112×112 → ArcFace（InsightFace `w600k_r50`，ONNX，Apple Silicon 走 CoreML）算 512 維特徵 → average-linkage 分群。約 0.2 秒/張。
+- **隱私**：人臉特徵只存在這台 Mac 暫存區的 `state.db`；返圖站只收到「哪幾張照片是同一個人」與代表照上臉的位置。
+- **第一次使用**會自動安裝 `requirements-faces.txt` 的套件，並下載 InsightFace 的 buffalo_l（約 290 MB，核對 SHA-256 後只留 `ingest/models/w600k_r50.onnx`）。**InsightFace 預訓練模型僅限非商業用途。**
+- **調整**：`FACE_THRESHOLD`（預設 0.4，越高分得越細）、`FACE_MIN_PHOTOS`（預設 3，少於這個張數的視為路人）、`FACE_MIN_PX`。
+- **重新分群**：每次執行都會整本重新分群（新插的卡會一起算）；人物連結會沿用照片重疊最多的舊分組，已經發出去的連結不會失效。
+- **限制**：只認得到臉。戴墨鏡、側臉、背影、遠景小人物常常偵測不到，這些照片不會出現在任何人物底下（實測一場單人外拍約 1/3 的照片偵測得到臉）。
+
 ## Claude Code skill
 
 `skills/photoreturn-ingest/` 是給 Claude Code 用的 skill：跟 Claude 說「插卡了，幫我傳到返圖站」，它會先問這次要傳到哪台伺服器（或幫你新增），再帶好參數執行 ingest、回報進度與返圖網址。skill 裡不含任何伺服器位址或 token，這些只存在你 Mac 上的伺服器設定。
@@ -195,6 +206,7 @@ ln -s "$PWD/skills/photoreturn-ingest" ~/.claude/skills/photoreturn-ingest
 ## 分享與下載
 
 - **整本相簿** `/a/<相簿碼>`：右上「下載」可選 JPG / RAW / JPG+RAW（依目前的星等篩選）。
+- **人物分享** `/f/<人物碼>`（需開啟人臉分組）：相簿頁選一個人物頭像，按「分享這個人的照片」。拿到連結的人只看得到這個人的照片，可整批下載。
 - **單張分享** `/p/<單張碼>`：大圖檢視裡按「分享」，手機開系統分享選單，桌機複製連結。拿到連結的人只看得到這一張，進不去整本相簿。
 - **單張下載**：大圖檢視與單張頁都有 JPG、RAW 兩顆按鈕（沒有 RAW 的照片只顯示 JPG）。
 - **通訊軟體縮圖**：`/a/`、`/p/` 頁面由後端注入 Open Graph 標籤，預覽卡片固定 1200×630（LINE、FB、Discord 的顯示比例，不會被亂裁）：
@@ -212,7 +224,10 @@ ln -s "$PWD/skills/photoreturn-ingest" ~/.claude/skills/photoreturn-ingest
 | GET | `/api/albums/{slug}/photo-ids` | 已上傳的 photo_id（token，續傳用） |
 | PUT | `/api/albums/{slug}/photos` | 上傳一張 JPG（token，multipart：file + meta JSON） |
 | PUT | `/api/albums/{slug}/photos/{photo_id}/raw` | 上傳該張的 RAW（token） |
-| GET | `/api/share/{key}` | 相簿內容，已依星等 → 美學分數排序 |
+| PUT | `/api/albums/{slug}/people` | 整本相簿的人物分組（token，JSON：每人的 photo_id 與代表臉位置） |
+| GET | `/api/share/{key}` | 相簿內容，已依星等 → 美學分數排序（含人物清單） |
+| GET | `/api/person/{key}`、`/api/person/{key}/zip` | 某個人物的照片與打包下載 |
+| GET | `/fm/{key}/{t\|p\|o\|r}/{sha}`、`/face/{key}/{指紋}.jpg` | 人物頁的圖片、人物頭像 |
 | GET | `/api/share/{key}/zip?min_stars=N&fmt=jpg\|raw\|all` | 串流打包下載 |
 | GET | `/api/photo/{pk}` | 單張分享的資料 |
 | GET | `/media/{key}/{t\|p\|o\|r}/{sha}` | 縮圖 / 預覽 / JPG / RAW |

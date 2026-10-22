@@ -1,19 +1,22 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { pageTitle } from "../lib/site.js";
-import { fetchAlbum } from "../lib/api.js";
+import { fetchAlbum, fetchPerson, personName } from "../lib/api.js";
+import { sharePerson } from "../lib/share.js";
 import { justify } from "../lib/justify.js";
 import { errorText, lang, t } from "../lib/i18n.js";
 import PhotoTile from "./PhotoTile.vue";
 import Lightbox from "./Lightbox.vue";
 import AlbumDownload from "./AlbumDownload.vue";
 
-const props = defineProps({ shareKey: { type: String, required: true } });
+// scope.type：a = 整本相簿，f = 某一個人的照片（人臉分組）
+const props = defineProps({ scope: { type: Object, required: true } });
 
 const album = ref(null);
 const error = ref(null);
 const minStars = ref(0);
 const tag = ref(null);
+const personKey = ref(null);
 const lbIndex = ref(-1);
 
 const galleryEl = ref(null);
@@ -24,7 +27,7 @@ onMounted(async () => {
   ro = new ResizeObserver(([e]) => (width.value = e.contentRect.width));
   ro.observe(galleryEl.value);
   try {
-    album.value = await fetchAlbum(props.shareKey);
+    album.value = await (props.scope.type === "f" ? fetchPerson : fetchAlbum)(props.scope.key);
     document.title = pageTitle(album.value.title);
   } catch (e) {
     error.value = e;
@@ -33,6 +36,10 @@ onMounted(async () => {
 onBeforeUnmount(() => ro?.disconnect());
 
 const photos = computed(() => album.value?.photos ?? []);
+const people = computed(() => album.value?.people ?? []);
+const person = computed(() => album.value?.person || people.value.find((p) => p.key === personKey.value));
+// 選了某個人時，整本下載改用那個人的 zip
+const dlScope = computed(() => (personKey.value ? { type: "f", key: personKey.value } : props.scope));
 
 // 星等篩選：全部 / ★5 / ★4 以上 / ★3 以上（數量和上一級相同的選項不顯示）
 const starOptions = computed(() => {
@@ -58,7 +65,8 @@ const topTags = computed(() => {
 });
 
 const visible = computed(() =>
-  photos.value.filter((p) => (p.stars || 0) >= minStars.value && (!tag.value || p.tags.includes(tag.value))),
+  photos.value.filter((p) => (p.stars || 0) >= minStars.value && (!tag.value || p.tags.includes(tag.value))
+    && (!personKey.value || p.people?.includes(personKey.value))),
 );
 
 const totalMB = computed(() => Math.round(visible.value.reduce((a, p) => a + (p.bytes || 0), 0) / 1e6));
@@ -81,10 +89,11 @@ const groups = computed(() => {
   return out.map((g) => ({ ...g, rows: justify(g.items, width.value, target, gap) }));
 });
 
-watch([minStars, tag], () => (lbIndex.value = -1));
+watch([minStars, tag, personKey], () => (lbIndex.value = -1));
 watch(lang, () => (tag.value = null)); // 換語言後標籤清單不同
 
 const toggleTag = (t) => (tag.value = tag.value === t ? null : t);
+const togglePerson = (k) => (personKey.value = personKey.value === k ? null : k);
 </script>
 
 <template>
@@ -94,8 +103,15 @@ const toggleTag = (t) => (tag.value = tag.value === t ? null : t);
       <p v-if="album" class="muted">
         {{ [album.shoot_date, t("photos", { n: visible.length }), totalMB ? `${totalMB} MB` : ""].filter(Boolean).join(" · ") }}
       </p>
+      <p v-if="person" class="person-head">
+        <img v-if="person.face" :src="person.face" alt="" class="avatar">
+        <span>{{ personName(person) }}</span>
+        <button v-if="scope.type === 'a'" class="btn small" @click="sharePerson(person.key, album.title)">
+          ↗ {{ t("sharePerson") }}
+        </button>
+      </p>
     </div>
-    <AlbumDownload v-if="album && visible.length" :share-key="shareKey" :photos="visible" :min-stars="minStars" />
+    <AlbumDownload v-if="album && visible.length" :scope="dlScope" :photos="visible" :min-stars="minStars" />
   </header>
 
   <nav v-if="album" class="filters" :aria-label="t('filters')">
@@ -105,6 +121,16 @@ const toggleTag = (t) => (tag.value = tag.value === t ? null : t);
         :aria-pressed="minStars === o.value" @click="minStars = o.value"
       >
         {{ o.label }}<span class="n">{{ o.count }}</span>
+      </button>
+    </div>
+    <div v-if="people.length" class="chips people" role="group" :aria-label="t('byPeople')">
+      <button
+        v-for="p in people" :key="p.key" class="chip person"
+        :aria-pressed="personKey === p.key" :aria-label="personName(p)" :title="personName(p)"
+        @click="togglePerson(p.key)"
+      >
+        <img v-if="p.face" :src="p.face" alt="" class="avatar" loading="lazy">
+        <span v-else>{{ personName(p) }}</span><span class="n">{{ p.count }}</span>
       </button>
     </div>
     <div v-if="topTags.length" class="chips tags" role="group" :aria-label="t('byTags')">
@@ -128,7 +154,7 @@ const toggleTag = (t) => (tag.value = tag.value === t ? null : t);
         <div v-for="(row, ri) in g.rows" :key="ri" class="row" :style="{ gap: `${layout.gap}px`, marginBottom: `${layout.gap}px` }">
           <PhotoTile
             v-for="cell in row" :key="cell.item.photo.sha"
-            :share-key="shareKey" :photo="cell.item.photo" :w="cell.w" :h="cell.h"
+            :scope="scope" :photo="cell.item.photo" :w="cell.w" :h="cell.h"
             @open="lbIndex = cell.item.index"
           />
         </div>
@@ -137,5 +163,5 @@ const toggleTag = (t) => (tag.value = tag.value === t ? null : t);
     <p v-if="album && !visible.length" class="muted center">{{ t("noMatch") }}</p>
   </main>
 
-  <Lightbox v-model:index="lbIndex" :photos="visible" :share-key="shareKey" :album-title="album?.title" />
+  <Lightbox v-model:index="lbIndex" :photos="visible" :scope="scope" :album-title="album?.title" />
 </template>

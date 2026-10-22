@@ -23,9 +23,9 @@ function copyText(text) {
   return ok ? Promise.resolve() : Promise.reject(new Error("copy failed"));
 }
 
-// 單張分享：手機用系統分享選單（可直接選 LINE / IG…），桌機複製連結
-export async function sharePhoto(pk, title) {
-  const url = `${location.origin}/p/${encodeURIComponent(pk)}`;
+// 分享連結：手機用系統分享選單（可直接選 LINE / IG…），桌機複製連結
+async function shareLink(path, title, copied, prompt) {
+  const url = `${location.origin}${path}`;
   const touch = matchMedia("(pointer: coarse)").matches;
   if (touch && navigator.share) {
     try {
@@ -37,8 +37,14 @@ export async function sharePhoto(pk, title) {
   }
   try {
     await copyText(url);
-    showToast(t("linkCopied"));
+    showToast(copied);
   } catch {
-    window.prompt(t("copyLinkPrompt"), url);
+    window.prompt(prompt, url);
   }
 }
+
+export const sharePhoto = (pk, title) =>
+  shareLink(`/p/${encodeURIComponent(pk)}`, title, t("linkCopied"), t("copyLinkPrompt"));
+
+export const sharePerson = (key, title) =>
+  shareLink(`/f/${encodeURIComponent(key)}`, title, t("personLinkCopied"), t("copyPersonPrompt"));

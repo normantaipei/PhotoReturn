@@ -5,6 +5,8 @@ PhotoReturn ingest — 回家插卡後跑這支：
   1. 複製：記憶卡 → Mac 暫存區（邊複製邊算 SHA-256），完成後自動退出記憶卡、跳通知「可以拔卡」
   2. 標籤：用 Prism（macOS Vision）加中英標籤、美學分數 → 星等，寫進 IPTC/XMP
            JPG 直接寫入；RAW 寫 .xmp sidecar，原始 RAW 不動
+     人臉分組（--faces 或 .env 的 FACES=1）：Vision 找臉 + ArcFace 特徵 → 整本相簿分群，
+           特徵只存在這台 Mac，返圖站只收到「哪幾張照片是同一個人」
   3. 上傳：JPG 上傳到返圖站（只有 RAW 的照片先用 sips 轉一張 JPG 再上傳）
   4. 備份：rsync 整個相簿（JPG + RAW + sidecar）到 NAS，並再跑一次比對確認
 
@@ -185,6 +187,16 @@ CREATE TABLE IF NOT EXISTS files (
     raw_uploaded INTEGER DEFAULT 0,   -- 對應的 RAW 是否已上傳（記在主檔那一列）
     UNIQUE (album, src_key)
 );
+CREATE TABLE IF NOT EXISTS faces (
+    id INTEGER PRIMARY KEY,
+    album TEXT NOT NULL,
+    file_id INTEGER NOT NULL,     -- files.id（主檔那一列）
+    x REAL, y REAL, w REAL, h REAL,   -- 相對於轉正後整張圖，左上原點，0~1
+    quality REAL,                 -- Vision 臉部品質 0~1，選代表照用
+    emb BLOB NOT NULL,            -- ArcFace 512 維 float32（人臉特徵，只留在這台 Mac）
+    person INTEGER                -- 分群結果；NULL = 沒歸到任何人（路人、誤判）
+);
+CREATE INDEX IF NOT EXISTS faces_album ON faces(album);
 """
 
 
@@ -195,8 +207,11 @@ def open_db(staging: Path):
     con.executescript(SCHEMA)
     if "profile" not in {r["name"] for r in con.execute("PRAGMA table_info(albums)")}:
         con.execute("ALTER TABLE albums ADD COLUMN profile TEXT")  # 這本相簿上傳到哪個伺服器設定
-    if "raw_uploaded" not in {r["name"] for r in con.execute("PRAGMA table_info(files)")}:
+    file_cols = {r["name"] for r in con.execute("PRAGMA table_info(files)")}
+    if "raw_uploaded" not in file_cols:
         con.execute("ALTER TABLE files ADD COLUMN raw_uploaded INTEGER DEFAULT 0")  # 記在主檔那一列
+    if "faces_done" not in file_cols:
+        con.execute("ALTER TABLE files ADD COLUMN faces_done INTEGER DEFAULT 0")
     return con
 
 
@@ -421,6 +436,91 @@ def step_tag(con, staging: Path, album: str, prism, args):
         log(f"  （{len(missing)} 個標籤沒有中文對照，可補進 Prism 的 tag_map.json）")
 
 
+# ---------- 人臉分組 ----------
+
+FACE_DEPS = HERE / "requirements-faces.txt"
+
+
+def load_faces():
+    """人臉分組要額外的套件（numpy / Pillow / onnxruntime / scipy），第一次用時自動裝進 venv。"""
+    try:
+        import faces
+    except ImportError:
+        log(f"  安裝人臉分組需要的套件（{FACE_DEPS.name}）…")
+        r = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", str(FACE_DEPS)])
+        if r.returncode != 0:
+            raise RuntimeError("套件安裝失敗")
+        import faces
+    return faces
+
+
+def step_faces(con, staging: Path, album: str):
+    try:
+        faces = load_faces()
+        model = faces.ensure_model(cfg_path("FACE_MODEL") or HERE / "models" / faces.MODEL_NAME, log)
+    except Exception as e:
+        log(f"[人臉分組] ⚠ 無法啟用：{e}")
+        return
+    album_dir = staging / album
+    rows = con.execute("SELECT * FROM files WHERE album=? AND tagged=1 AND web_rel IS NOT NULL", (album,)).fetchall()
+    todo = [r for r in rows if not r["faces_done"]]
+    log(f"[人臉分組] 偵測：{len(todo)} 張待處理（共 {len(rows)} 張）")
+    min_px = int(cfg("FACE_MIN_PX", "40"))
+    embed = faces.Embedder(model) if todo else None
+    t0 = time.time()
+    for i, r in enumerate(todo, 1):
+        try:
+            found = faces.detect(album_dir / r["web_rel"], min_px)
+            vecs = embed([crop for _, _, crop in found]) if found else []
+        except Exception as e:
+            log(f"  ⚠ {r['web_rel']} 人臉偵測失敗：{e}")
+            continue
+        con.execute("DELETE FROM faces WHERE file_id=?", (r["id"],))
+        for (box, q, _), v in zip(found, vecs):
+            con.execute("INSERT INTO faces (album, file_id, x, y, w, h, quality, emb) VALUES (?,?,?,?,?,?,?,?)",
+                        (album, r["id"], *box, q, v.astype("float32").tobytes()))
+        con.execute("UPDATE files SET faces_done=1 WHERE id=?", (r["id"],))
+        con.commit()
+        if i % 50 == 0 or i == len(todo):
+            log(f"  {i}/{len(todo)}  {(time.time() - t0) / i:.2f} 秒/張")
+
+    # 每次都整本重新分群（只算距離，很快）：新插的卡可能讓原本分開的兩群合起來
+    import numpy as np
+    fr = con.execute("SELECT id, file_id, emb FROM faces WHERE album=?", (album,)).fetchall()
+    labels = faces.cluster(np.array([np.frombuffer(f["emb"], dtype=np.float32) for f in fr]).reshape(-1, 512),
+                           float(cfg("FACE_THRESHOLD", "0.4")))
+    photos_of = {}
+    for f, lab in zip(fr, labels):
+        photos_of.setdefault(int(lab), set()).add(f["file_id"])
+    min_photos = int(cfg("FACE_MIN_PHOTOS", "3"))
+    # 張數多的排前面，編號 = 1, 2, 3…；張數太少的（路人、誤判）不算
+    keep = sorted((lab for lab, ps in photos_of.items() if len(ps) >= min_photos), key=lambda l: -len(photos_of[l]))
+    person = {lab: n for n, lab in enumerate(keep, 1)}
+    con.executemany("UPDATE faces SET person=? WHERE id=?",
+                    [(person.get(int(lab)), f["id"]) for f, lab in zip(fr, labels)])
+    con.commit()
+    log(f"  {len(fr)} 張臉 → {len(person)} 個人物" +
+        (f"：{'、'.join(str(len(photos_of[l])) for l in keep)} 張" if keep else ""))
+
+
+def people_payload(con, album: str) -> list:
+    """給返圖站的分組：每個人物有哪些照片（photo_id）、代表照與臉的位置。不含人臉特徵。"""
+    rows = con.execute("""SELECT fa.person, fa.x, fa.y, fa.w, fa.h, fa.quality, fi.sha256
+                          FROM faces fa JOIN files fi ON fi.id=fa.file_id
+                          WHERE fa.album=? AND fa.person IS NOT NULL AND fi.uploaded=1
+                          ORDER BY fa.person""", (album,)).fetchall()
+    people = {}
+    for r in rows:
+        p = people.setdefault(r["person"], {"photos": [], "cover": None, "_q": -1.0})
+        if r["sha256"] not in p["photos"]:
+            p["photos"].append(r["sha256"])
+        q = (r["quality"] or 0) + min(r["w"], 0.3)  # 品質好、臉大的當代表照
+        if q > p["_q"]:
+            p["_q"] = q
+            p["cover"] = {"photo_id": r["sha256"], "box": [r["x"], r["y"], r["w"], r["h"]]}
+    return [{"photos": p["photos"], "cover": p["cover"]} for _, p in sorted(people.items())]
+
+
 # ---------- 3. 上傳 ----------
 
 def sha256_file(path: Path) -> str:
@@ -431,7 +531,7 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def step_upload(con, staging: Path, album: str):
+def step_upload(con, staging: Path, album: str, faces_on: bool = False):
     server = cfg("SERVER_URL").rstrip("/")
     token = cfg("UPLOAD_TOKEN")
     if not server or not token:
@@ -529,6 +629,13 @@ def step_upload(con, staging: Path, album: str):
                 log(f"  {i}/{len(jobs)}  {(time.time() - t0) / i:.2f} 秒/張")
     con.execute("UPDATE albums SET upload_done=? WHERE name=?", (int(failed == 0), album))
     con.commit()
+    if faces_on and con.execute("SELECT 1 FROM faces WHERE album=? LIMIT 1", (album,)).fetchone():
+        people = people_payload(con, album)
+        r = s.put(f"{server}/api/albums/{album}/people", json={"people": people}, timeout=60)
+        if r.ok:
+            log(f"  人物分組：{len(people)} 位已更新")
+        else:
+            log(f"  ⚠ 人物分組上傳失敗（{r.status_code}）：{r.text[:200]}")
     log(f"  返圖網址：{share}" + (f"（{failed} 張失敗，可 --resume 重試）" if failed else ""))
 
 
@@ -635,6 +742,8 @@ def main():
     ap.add_argument("--no-eject", action="store_true", help="複製完不要自動退出記憶卡")
     ap.add_argument("--rating-overwrite", action="store_true", help="相機內已評的星等也用 AI 分數覆蓋")
     ap.add_argument("--retag", action="store_true", help="重新跑標籤（會一併重新上傳）")
+    ap.add_argument("--faces", action=argparse.BooleanOptionalAction, default=None,
+                    help="人臉分組（預設看 .env 的 FACES；--no-faces 這次不做）")
     ap.add_argument("--skip-upload", action="store_true")
     ap.add_argument("--no-raw", action="store_true", help="這次不上傳 RAW 到返圖站（NAS 仍會備份 RAW）")
     ap.add_argument("--skip-nas", action="store_true")
@@ -715,12 +824,15 @@ def main():
         con.commit()
 
     step_tag(con, staging, album, prism, args)
+    faces_on = args.faces if args.faces is not None else cfg("FACES", "0") == "1"
+    if faces_on:
+        step_faces(con, staging, album)
     if profile and not args.skip_upload:
         con.execute("UPDATE albums SET profile=? WHERE name=?", (profile, album))  # 記住這本傳到哪台
         con.commit()
     if not args.skip_upload:
         try:
-            step_upload(con, staging, album)
+            step_upload(con, staging, album, faces_on)
         except requests.RequestException as e:
             log(f"  ⚠ 上傳失敗：{e}（可 ingest/ingest.sh --resume {album} 重試）")
             if sys.platform == "darwin" and ("Errno 65" in str(e) or "No route to host" in str(e)):

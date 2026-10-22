@@ -185,3 +185,12 @@ button.btn.small { font-size: 13px; }
 }
 .lang-switch button:hover { color: var(--text); }
 .lang-switch button[aria-pressed="true"] { color: var(--text); background: var(--surface-2); }
+
+/* ---------- 人物（人臉分組） ---------- */
+
+.chips.people { margin-top: 6px; }
+.chip.person { display: inline-flex; align-items: center; gap: 2px; padding: 2px 10px 2px 2px; }
+.avatar { width: 30px; height: 30px; border-radius: 50%; object-fit: cover; display: block; background: var(--surface-2); }
+.chip.person[aria-pressed="true"] .avatar { outline: 2px solid var(--accent); outline-offset: 1px; }
+.person-head { display: flex; align-items: center; gap: 8px; margin: 10px 0 0; flex-wrap: wrap; }
+.person-head .avatar { width: 40px; height: 40px; }

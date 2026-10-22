@@ -4,7 +4,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { fmtBytes, zipUrl } from "../lib/api.js";
 import { t } from "../lib/i18n.js";
 
-const props = defineProps({ shareKey: String, photos: Array, minStars: Number });
+const props = defineProps({ scope: Object, photos: Array, minStars: Number });
 const open = ref(false);
 const root = ref(null);
 
@@ -33,7 +33,7 @@ onBeforeUnmount(() => { document.removeEventListener("click", onDoc); removeEven
     </button>
     <div v-if="open" class="dl-pop" role="menu">
       <a
-        v-for="o in options" :key="o.fmt" role="menuitem" :href="zipUrl(shareKey, minStars, o.fmt)"
+        v-for="o in options" :key="o.fmt" role="menuitem" :href="zipUrl(scope, minStars, o.fmt)"
         download @click="open = false"
       >
         <strong>{{ o.label }}</strong>

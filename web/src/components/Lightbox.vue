@@ -4,7 +4,7 @@ import { mediaUrl, starText } from "../lib/api.js";
 import { t } from "../lib/i18n.js";
 import DownloadButtons from "./DownloadButtons.vue";
 
-const props = defineProps({ photos: Array, index: Number, shareKey: String, albumTitle: String });
+const props = defineProps({ photos: Array, index: Number, scope: Object, albumTitle: String });
 const emit = defineEmits(["update:index"]);
 
 const open = computed(() => props.index >= 0 && props.index < props.photos.length);
@@ -23,7 +23,7 @@ watch(() => props.index, () => {
   if (!open.value) return;
   for (const j of [props.index - 1, props.index + 1]) {
     const p = props.photos[j];
-    if (p) new Image().src = mediaUrl(props.shareKey, "p", p.sha);
+    if (p) new Image().src = mediaUrl(props.scope, "p", p.sha);
   }
 });
 
@@ -54,7 +54,7 @@ function onTouchEnd(e) {
     <button class="lb-close" :aria-label="t('close')" @click="close">✕</button>
     <button class="lb-nav lb-prev" :aria-label="t('prev')" @click="step(-1)">‹</button>
     <figure @click.self="close">
-      <img :key="photo.sha" :src="mediaUrl(shareKey, 'p', photo.sha)" :alt="photo.name">
+      <img :key="photo.sha" :src="mediaUrl(scope, 'p', photo.sha)" :alt="photo.name">
       <figcaption>
         <span class="lb-meta">
           <span class="lb-stars">{{ starText(photo.stars) }}</span>
@@ -63,7 +63,7 @@ function onTouchEnd(e) {
         </span>
         <DownloadButtons
           :photo="photo" :share-title="albumTitle"
-          :jpg-url="mediaUrl(shareKey, 'o', photo.sha)" :raw-url="mediaUrl(shareKey, 'r', photo.sha)"
+          :jpg-url="mediaUrl(scope, 'o', photo.sha)" :raw-url="mediaUrl(scope, 'r', photo.sha)"
         />
       </figcaption>
     </figure>

@@ -1,0 +1,5 @@
+# 人臉分組（--faces）才需要；第一次使用時自動安裝
+numpy==2.5.4
+pillow==13.0.0
+onnxruntime==1.31.0
+scipy==1.18.1
