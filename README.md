@@ -146,9 +146,25 @@ ingest/ingest.sh --resume 2026-10-25_CWT67   # 中斷後接著跑（不需要卡
 ingest/ingest.sh --list                      # 所有相簿進度與返圖網址
 ```
 
+### 多台伺服器（不同場次用不同返圖站）
+
+每台伺服器存成一個「伺服器設定」（`ingest/servers/<名稱>.env`，權限 600、不進 git），上傳時用 `--profile` 指定：
+
+```bash
+ingest/ingest.sh --profile cwt67 --server http://<伺服器IP>:8080 --token <token> --save-only   # 新增
+ingest/ingest.sh --servers                     # 列出全部與連線狀態（不顯示 token）
+ingest/ingest.sh --profile cwt67               # 插卡，上傳到 cwt67
+ingest/ingest.sh --resume <相簿>               # 自動沿用這本相簿上次的伺服器
+```
+
+每本相簿會記住自己傳到哪台；`--resume` 時指定別台會被擋下，確定要換才加 `--force-profile`。
+只有一台的話也可以照舊把 `--server` / `--token` 存在 `.env`（不指定 `--profile` 時使用）。
+
 | 參數 | 說明 |
 |---|---|
-| `--server` / `--token` / `--staging` / `--nas` | 連線設定，覆蓋 `.env`；加 `--save` 寫回 `.env` |
+| `--profile` / `--servers` | 選擇 / 列出伺服器設定 |
+| `--server` / `--token` / `--nas` | 連線設定；搭配 `--profile … --save-only` 存成伺服器設定 |
+| `--staging` | 暫存資料夾（這台 Mac 共用，存在 `.env`） |
 | `--card PATH` | 指定記憶卡（預設找 `/Volumes/*` 下有 `DCIM` 的） |
 | `--no-eject` | 複製完不自動退出記憶卡 |
 | `--rating-overwrite` | 相機內評過的星等也改用 AI 分數（預設相機評分優先） |
@@ -165,6 +181,16 @@ ingest/ingest.sh --list                      # 所有相簿進度與返圖網址
 - **重插同一張卡**不會重複複製；每次讀卡放在獨立子資料夾，兩台同型號相機的 `DSC01234.JPG` 不會互相覆蓋。
 - **星等**：Prism 的美學分數用 `RATING_THRESHOLDS` 切成 1~5 星，預設 `0,0.4,0.55,0.7`（Prism README 給 cos 的建議值）。
 - 標籤直接引用 `PRISM_DIR` 的 `vision_tagger.py`，改 Prism 的 `tag_map.json` 這邊也會跟著生效。
+
+## Claude Code skill
+
+`skills/photoreturn-ingest/` 是給 Claude Code 用的 skill：跟 Claude 說「插卡了，幫我傳到返圖站」，它會先問這次要傳到哪台伺服器（或幫你新增），再帶好參數執行 ingest、回報進度與返圖網址。skill 裡不含任何伺服器位址或 token，這些只存在你 Mac 上的伺服器設定。
+
+安裝（連結過去，`git pull` 就會更新）：
+
+```bash
+ln -s "$PWD/skills/photoreturn-ingest" ~/.claude/skills/photoreturn-ingest
+```
 
 ## 分享與下載
 

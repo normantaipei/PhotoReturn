@@ -41,3 +41,6 @@ server/data/
 *.xmp
 
 .DS_Store
+
+# 伺服器設定（含 token）
+ingest/servers/

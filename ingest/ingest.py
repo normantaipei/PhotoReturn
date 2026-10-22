@@ -10,11 +10,12 @@ PhotoReturn ingest — 回家插卡後跑這支：
 
 每一步的進度都記在暫存區的 state.db，中斷後用 --resume 接著跑。
 
-用法:
-  ./ingest.sh                                 # 自動找記憶卡（沒插就等），相簿名預設為拍攝日期
-  ./ingest.sh --album 2026-10-25_CWT67 --title "CWT67 Day1"
-  ./ingest.sh --resume 2026-10-25_CWT67       # 不讀卡，繼續之前沒做完的步驟
-  ./ingest.sh --list                          # 列出暫存區的相簿與進度
+用法（在 PhotoReturn 資料夾執行）:
+  ingest/ingest.sh --servers                             # 列出伺服器設定（不同場次的返圖站）
+  ingest/ingest.sh --profile cwt67                       # 插卡，上傳到伺服器設定「cwt67」
+  ingest/ingest.sh --profile cwt67 --album 2026-10-25_CWT67 --title "CWT67 Day1"
+  ingest/ingest.sh --resume 2026-10-25_CWT67             # 不讀卡，繼續沒做完的步驟（沿用上次的伺服器）
+  ingest/ingest.sh --list                                # 暫存區的相簿、進度與各自的伺服器
 """
 
 import argparse
@@ -68,6 +69,52 @@ def save_env(updates: dict):
     lines += [f"{k}={v}" for k, v in left.items()]
     ENV_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
     ENV_FILE.chmod(0o600)  # 有 token
+
+
+# 伺服器設定檔：不同場次 / 活動用不同返圖站，每個一個檔 servers/<名稱>.env（只存在這台 Mac、不進 git）
+# 優先順序：.env（這台 Mac 的共用設定）< 伺服器設定檔 < 指令列參數
+SERVERS_DIR = Path(os.environ.get("PR_SERVERS_DIR", HERE / "servers"))
+PROFILE_RE = re.compile(r"^[\w.\-]{1,40}$")
+PROFILE_KEYS = ("SERVER_URL", "UPLOAD_TOKEN", "NAS_SMB")
+
+
+def profile_path(name: str) -> Path:
+    if not PROFILE_RE.match(name):
+        sys.exit(f"伺服器名稱只能用文字、數字、. _ -：{name}")
+    return SERVERS_DIR / f"{name}.env"
+
+
+def use_profile(name: str):
+    path = profile_path(name)
+    if not path.exists():
+        sys.exit(f"沒有名為「{name}」的伺服器設定（--servers 列出全部；新增：--profile {name} --server 網址 --token … --save-only）")
+    ENV.update({k: v for k, v in load_env(path).items() if k in PROFILE_KEYS})
+
+
+def save_profile(name: str, data: dict):
+    SERVERS_DIR.mkdir(mode=0o700, exist_ok=True)
+    path = profile_path(name)
+    old = load_env(path) if path.exists() else {}
+    old.update({k: v for k, v in data.items() if v})
+    path.write_text("".join(f"{k}={old[k]}\n" for k in PROFILE_KEYS if old.get(k)), encoding="utf-8")
+    path.chmod(0o600)  # 有 token
+
+
+def show_servers():
+    """列出伺服器設定（不顯示 token），順便測連線。"""
+    files = sorted(SERVERS_DIR.glob("*.env")) if SERVERS_DIR.exists() else []
+    if not files:
+        log("還沒有伺服器設定。新增：ingest/ingest.sh --profile <名稱> --server http://<IP>:8080 --token <token> --save-only")
+    for f in files:
+        e = load_env(f)
+        url = e.get("SERVER_URL", "").rstrip("/")
+        try:
+            r = requests.get(f"{url}/healthz", timeout=4)
+            state = f"連線正常，剩 {r.json().get('free_gb')} GB" if r.ok else f"回應 {r.status_code}"
+        except requests.RequestException as ex:
+            state = "連不到" + ("（可能是 macOS 本機網路權限）" if "Errno 65" in str(ex) else "")
+        log(f"{f.stem:<20} {url:<34} token {'已設定' if e.get('UPLOAD_TOKEN') else '❌ 缺'}"
+            f"  NAS {e.get('NAS_SMB') or '—'}  {state}")
 
 
 def cfg(key, default=""):
@@ -146,6 +193,8 @@ def open_db(staging: Path):
     con = sqlite3.connect(staging / "state.db")
     con.row_factory = sqlite3.Row
     con.executescript(SCHEMA)
+    if "profile" not in {r["name"] for r in con.execute("PRAGMA table_info(albums)")}:
+        con.execute("ALTER TABLE albums ADD COLUMN profile TEXT")  # 這本相簿上傳到哪個伺服器設定
     if "raw_uploaded" not in {r["name"] for r in con.execute("PRAGMA table_info(files)")}:
         con.execute("ALTER TABLE files ADD COLUMN raw_uploaded INTEGER DEFAULT 0")  # 記在主檔那一列
     return con
@@ -403,7 +452,7 @@ def step_upload(con, staging: Path, album: str):
     server = cfg("SERVER_URL").rstrip("/")
     token = cfg("UPLOAD_TOKEN")
     if not server or not token:
-        log("[3/4 上傳] 略過：.env 沒有設定 SERVER_URL / UPLOAD_TOKEN")
+        log("[3/4 上傳] 略過：沒有指定伺服器（--profile <名稱>，用 --servers 查看已設定的伺服器）")
         return
     a = con.execute("SELECT * FROM albums WHERE name=?", (album,)).fetchone()
     s = requests.Session()
@@ -590,7 +639,7 @@ def show_list(con):
     mark = lambda v: "✅" if v else "⬜"
     for r in rows:
         log(f"{r['name']:<32} {r['n']:>5} 檔  複製{mark(r['copy_done'])} 標籤{mark(r['tag_done'])} "
-            f"上傳{mark(r['upload_done'])} NAS{mark(r['nas_done'])}  {r['share_url'] or ''}")
+            f"上傳{mark(r['upload_done'])} NAS{mark(r['nas_done'])}  [{r['profile'] or '預設'}] {r['share_url'] or ''}")
 
 
 def main():
@@ -607,38 +656,70 @@ def main():
     ap.add_argument("--no-raw", action="store_true", help="這次不上傳 RAW 到返圖站（NAS 仍會備份 RAW）")
     ap.add_argument("--skip-nas", action="store_true")
     ap.add_argument("--cleanup", action="store_true", help="上傳與 NAS 都成功後刪除暫存區的這本相簿")
-    g = ap.add_argument_group("連線設定（覆蓋 .env；後端安裝完會印出整串）")
+    g = ap.add_argument_group("伺服器（不同場次可用不同返圖站，各存成一個伺服器設定）")
+    g.add_argument("--profile", metavar="名稱", help="這次上傳到哪個伺服器設定（--servers 列出）")
+    g.add_argument("--servers", action="store_true", help="列出所有伺服器設定與連線狀態（不顯示 token）")
     g.add_argument("--server", help="返圖站後端網址，例：http://192.168.1.50:8080")
     g.add_argument("--token", help="上傳 token")
-    g.add_argument("--staging", help="暫存資料夾")
     g.add_argument("--nas", help="NAS 備份位置，例：smb://帳號@192.168.1.10/photo/返圖備份")
-    g.add_argument("--save", action="store_true", help="把上面的連線設定存進 .env，之後直接 ./ingest.sh 即可")
+    g.add_argument("--staging", help="暫存資料夾（這台 Mac 共用）")
+    g.add_argument("--save", action="store_true",
+                   help="記住設定：有 --profile 存進該伺服器設定，否則存進 .env")
+    g.add_argument("--save-only", action="store_true", help="只存設定，不讀卡也不上傳")
+    g.add_argument("--force-profile", action="store_true", help="--resume 時改傳到跟上次不同的伺服器")
     args = ap.parse_args()
+    if args.save_only:
+        args.save = True
 
-    overrides = {k: v for k, v in (("SERVER_URL", args.server), ("UPLOAD_TOKEN", args.token),
-                                   ("STAGING_DIR", args.staging), ("NAS_SMB", args.nas)) if v}
-    ENV.update(overrides)
-    if args.no_raw:
-        ENV["UPLOAD_RAW"] = "0"
-    if args.save and overrides:
-        save_env(overrides)
-        log(f"已存進 {ENV_FILE}：{', '.join(overrides)}")
-    if args.nas and args.nas.startswith("smb://"):
-        try:
-            parse_smb(args.nas)  # 格式錯就在讀卡前先停
-        except RuntimeError as e:
-            sys.exit(str(e))
-
+    if args.servers:
+        return show_servers()
+    if args.staging:
+        ENV["STAGING_DIR"] = args.staging
     staging = cfg_path("STAGING_DIR", "~/PhotoReturnStaging")
     con = open_db(staging)
     if args.list:
         return show_list(con)
 
+    # 決定這次上傳到哪個伺服器：--resume 時沿用這本相簿上次的伺服器，避免傳錯台
+    profile = args.profile
+    if args.resume:
+        row = con.execute("SELECT * FROM albums WHERE name=?", (args.resume,)).fetchone()
+        if not row:
+            sys.exit(f"暫存區沒有相簿 {args.resume}（用 --list 查看）")
+        bound = row["profile"]
+        if profile and bound and profile != bound and not args.force_profile:
+            sys.exit(f"「{args.resume}」之前上傳到伺服器「{bound}」。確定要改傳到「{profile}」請加 --force-profile")
+        profile = profile or bound
+    # 已存在的設定就載入；--save 到新名稱 = 新增（網址與 token 取自參數，或沿用 .env 裡的）
+    if profile and (profile_path(profile).exists() or not args.save):
+        use_profile(profile)
+
+    overrides = {k: v for k, v in (("SERVER_URL", args.server), ("UPLOAD_TOKEN", args.token),
+                                   ("NAS_SMB", args.nas)) if v}
+    ENV.update(overrides)
+    if args.no_raw:
+        ENV["UPLOAD_RAW"] = "0"
+    if args.nas and args.nas.startswith("smb://"):
+        try:
+            parse_smb(args.nas)  # 格式錯就在讀卡前先停
+        except RuntimeError as e:
+            sys.exit(str(e))
+    if args.save:
+        if profile:
+            if not cfg("SERVER_URL") or not cfg("UPLOAD_TOKEN"):
+                sys.exit("新增伺服器設定需要 --server 與 --token")
+            save_profile(profile, {k: cfg(k) for k in PROFILE_KEYS})
+            log(f"已存成伺服器設定「{profile}」：{cfg('SERVER_URL')}（token 已存，不顯示）")
+        if args.staging or (not profile and overrides):
+            save_env({**({"STAGING_DIR": args.staging} if args.staging else {}),
+                      **({} if profile else overrides)})
+            log(f"已存進 {ENV_FILE}")
+        if args.save_only:
+            return
+
     prism = load_prism()
     if args.resume:
         album = args.resume
-        if not con.execute("SELECT 1 FROM albums WHERE name=?", (album,)).fetchone():
-            sys.exit(f"暫存區沒有相簿 {album}（用 --list 查看）")
         if args.title:
             con.execute("UPDATE albums SET title=? WHERE name=?", (args.title, album))
             con.commit()
@@ -651,11 +732,14 @@ def main():
         con.commit()
 
     step_tag(con, staging, album, prism, args)
+    if profile and not args.skip_upload:
+        con.execute("UPDATE albums SET profile=? WHERE name=?", (profile, album))  # 記住這本傳到哪台
+        con.commit()
     if not args.skip_upload:
         try:
             step_upload(con, staging, album)
         except requests.RequestException as e:
-            log(f"  ⚠ 上傳失敗：{e}（可 --resume {album} 重試）")
+            log(f"  ⚠ 上傳失敗：{e}（可 ingest/ingest.sh --resume {album} 重試）")
             if sys.platform == "darwin" and ("Errno 65" in str(e) or "No route to host" in str(e)):
                 # macOS 15+ 的「本機網路」權限：沒允許的 App（及其啟動的 Python）連區網會得到 errno 65
                 log("  👉 很可能是 macOS 的「本機網路」權限擋住了：系統設定 → 隱私權與安全性 → 本機網路，\n"
@@ -676,7 +760,7 @@ def main():
         log(f"🎉 完成：{a['share_url'] or album}")
     else:
         notify(f"{album} 有步驟未完成，請看終端機", "Basso")
-        log(f"⚠ 有步驟未完成，修正後執行：./ingest.sh --resume {album}")
+        log(f"⚠ 有步驟未完成，修正後在 PhotoReturn 資料夾執行：ingest/ingest.sh --resume {album}")
 
 
 if __name__ == "__main__":
