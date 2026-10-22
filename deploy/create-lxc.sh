@@ -11,6 +11,7 @@
 #   --install          建好後直接在容器裡跑 bootstrap.sh：從 GitHub 抓程式、build、安裝返圖站
 #   --site-name NAME   網站名稱：整個返圖站的名字（--install 用，沒給會詢問）
 #                      暫存資料夾、NAS 備份、相簿名稱都是之後在 Mac 上傳時設定，這裡只架伺服器
+#   --public-url URL   對外網址（反向代理 / https 網域），例 https://photos.example.com（--install 用）
 #   --ref BRANCH|TAG   要裝哪個分支或 tag              預設 main
 #   --id N             容器編號            預設下一個可用編號
 #   --hostname NAME    主機名稱            預設 photoreturn
@@ -43,12 +44,13 @@ ask() {
 # 中間的指令就不會把剩下的腳本當成自己的輸入吃掉
 main() {
 CTID="" HOST=photoreturn DISK="" CORES=2 MEM=1024 STORAGE="" BRIDGE=vmbr0 SSH_KEY=""
-INSTALL="" SITE_NAME="" REF="main"
+INSTALL="" SITE_NAME="" PUBLIC_URL="" REF="main"
 while [ $# -gt 0 ]; do
   case "$1" in
     --install) INSTALL=1; shift ;;
     --site-name) SITE_NAME="$2"; shift 2 ;;
     --ref) REF="$2"; shift 2 ;;
+    --public-url) PUBLIC_URL="$2"; shift 2 ;;
     --id) CTID="$2"; shift 2 ;;
     --hostname) HOST="$2"; shift 2 ;;
     --disk) DISK="$2"; shift 2 ;;
@@ -133,7 +135,7 @@ if [ -n "$INSTALL" ]; then
   # 參數用 "$@" 傳進去，網站名稱有空白或中文也不會被拆開
   pct exec "$CTID" -- env PHOTORETURN_REPO="https://github.com/$REPO.git" PHOTORETURN_REF="$REF" \
     bash -c 'curl -fsSL "https://raw.githubusercontent.com/'"$REPO"'/'"$REF"'/bootstrap.sh" | bash -s -- "$@"' _ \
-    --no-prompt --site-name "$SITE_NAME" </dev/null \
+    --no-prompt --site-name "$SITE_NAME" ${PUBLIC_URL:+--public-url "$PUBLIC_URL"} </dev/null \
     || die "安裝失敗，可進容器看看：pct enter ${CTID}"
   echo
   echo "  容器編號：$CTID   主機名稱：$HOST   IP：$IP"
