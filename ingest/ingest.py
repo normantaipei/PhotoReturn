@@ -6,6 +6,7 @@ PhotoReturn ingest — 回家插卡後跑這支：
   2. 標籤：用 Prism（macOS Vision）加中英標籤、美學分數 → 星等，寫進 IPTC/XMP
            JPG 直接寫入；RAW 寫 .xmp sidecar，原始 RAW 不動
      人臉分組（--faces 或 .env 的 FACES=1）：Vision 找臉 + ArcFace 特徵 → 整本相簿分群，
+           沒拍到臉的照片再用服裝外觀與拍攝時間補上；
            特徵只存在這台 Mac，返圖站只收到「哪幾張照片是同一個人」
   3. 上傳：JPG 上傳到返圖站（只有 RAW 的照片先用 sips 轉一張 JPG 再上傳）
   4. 備份：rsync 整個相簿（JPG + RAW + sidecar）到 NAS，並再跑一次比對確認
@@ -197,7 +198,23 @@ CREATE TABLE IF NOT EXISTS faces (
     person INTEGER                -- 分群結果；NULL = 沒歸到任何人（路人、誤判）
 );
 CREATE INDEX IF NOT EXISTS faces_album ON faces(album);
+CREATE TABLE IF NOT EXISTS bodies (
+    id INTEGER PRIMARY KEY,
+    album TEXT NOT NULL,
+    file_id INTEGER NOT NULL,
+    x REAL, y REAL, w REAL, h REAL,
+    emb BLOB NOT NULL             -- Vision 外觀特徵（服裝、髮色…），只留在這台 Mac
+);
+CREATE INDEX IF NOT EXISTS bodies_album ON bodies(album);
+CREATE TABLE IF NOT EXISTS photo_people (
+    album TEXT NOT NULL,
+    file_id INTEGER NOT NULL,
+    person INTEGER NOT NULL,
+    via TEXT NOT NULL,            -- face / body / time：怎麼判斷這張有這個人
+    PRIMARY KEY (file_id, person)
+);
 """
+FACES_VERSION = 2  # files.faces_done 小於這個就重新偵測（2 = 臉 + 身體）
 
 
 def open_db(staging: Path):
@@ -463,23 +480,27 @@ def step_faces(con, staging: Path, album: str):
         return
     album_dir = staging / album
     rows = con.execute("SELECT * FROM files WHERE album=? AND tagged=1 AND web_rel IS NOT NULL", (album,)).fetchall()
-    todo = [r for r in rows if not r["faces_done"]]
+    todo = [r for r in rows if (r["faces_done"] or 0) < FACES_VERSION]
     log(f"[人臉分組] 偵測：{len(todo)} 張待處理（共 {len(rows)} 張）")
     min_px = int(cfg("FACE_MIN_PX", "40"))
     embed = faces.Embedder(model) if todo else None
     t0 = time.time()
     for i, r in enumerate(todo, 1):
         try:
-            found = faces.detect(album_dir / r["web_rel"], min_px)
+            found, bodies = faces.detect(album_dir / r["web_rel"], min_px)
             vecs = embed([crop for _, _, crop in found]) if found else []
         except Exception as e:
             log(f"  ⚠ {r['web_rel']} 人臉偵測失敗：{e}")
             continue
         con.execute("DELETE FROM faces WHERE file_id=?", (r["id"],))
+        con.execute("DELETE FROM bodies WHERE file_id=?", (r["id"],))
         for (box, q, _), v in zip(found, vecs):
             con.execute("INSERT INTO faces (album, file_id, x, y, w, h, quality, emb) VALUES (?,?,?,?,?,?,?,?)",
                         (album, r["id"], *box, q, v.astype("float32").tobytes()))
-        con.execute("UPDATE files SET faces_done=1 WHERE id=?", (r["id"],))
+        for box, v in bodies:
+            con.execute("INSERT INTO bodies (album, file_id, x, y, w, h, emb) VALUES (?,?,?,?,?,?,?)",
+                        (album, r["id"], *box, v.tobytes()))
+        con.execute("UPDATE files SET faces_done=? WHERE id=?", (FACES_VERSION, r["id"]))
         con.commit()
         if i % 50 == 0 or i == len(todo):
             log(f"  {i}/{len(todo)}  {(time.time() - t0) / i:.2f} 秒/張")
@@ -498,27 +519,55 @@ def step_faces(con, staging: Path, album: str):
     person = {lab: n for n, lab in enumerate(keep, 1)}
     con.executemany("UPDATE faces SET person=? WHERE id=?",
                     [(person.get(int(lab)), f["id"]) for f, lab in zip(fr, labels)])
+
+    # 把人物擴散到沒拍到臉的照片（服裝外觀、拍攝時間）
+    photos = {r["id"]: {"t": parse_time(r["taken_at"]), "faces": [], "bodies": []} for r in rows}
+    for f in con.execute("SELECT file_id, x, y, w, h, person FROM faces WHERE album=?", (album,)):
+        if f["file_id"] in photos:
+            photos[f["file_id"]]["faces"].append(((f["x"], f["y"], f["w"], f["h"]), f["person"]))
+    for b in con.execute("SELECT file_id, x, y, w, h, emb FROM bodies WHERE album=?", (album,)):
+        if b["file_id"] in photos:
+            photos[b["file_id"]]["bodies"].append(((b["x"], b["y"], b["w"], b["h"]),
+                                                   np.frombuffer(b["emb"], dtype=np.float32)))
+    result = faces.assign(photos, float(cfg("FACE_BODY_THRESHOLD", "0.8")), float(cfg("FACE_BODY_MARGIN", "0.05")),
+                          float(cfg("FACE_TIME_WINDOW", "300")))
+    con.execute("DELETE FROM photo_people WHERE album=?", (album,))
+    con.executemany("INSERT INTO photo_people (album, file_id, person, via) VALUES (?,?,?,?)",
+                    [(album, k, p, via) for k, ps in result.items() for p, via in ps.items()])
     con.commit()
-    log(f"  {len(fr)} 張臉 → {len(person)} 個人物" +
-        (f"：{'、'.join(str(len(photos_of[l])) for l in keep)} 張" if keep else ""))
+
+    log(f"  {len(fr)} 張臉 → {len(person)} 個人物")
+    for n in range(1, len(person) + 1):
+        via = [v for ps in result.values() for p, v in ps.items() if p == n]
+        log(f"    人物 {n}：{len(via)} 張（臉 {via.count('face')}、服裝 {via.count('body')}、時間 {via.count('time')}）")
+    log(f"  沒有歸到任何人物：{sum(1 for ps in result.values() if not ps)} 張")
+
+
+def parse_time(v):
+    try:
+        return dt.datetime.fromisoformat(v) if v else None
+    except ValueError:
+        return None
 
 
 def people_payload(con, album: str) -> list:
     """給返圖站的分組：每個人物有哪些照片（photo_id）、代表照與臉的位置。不含人臉特徵。"""
+    people = {}
+    for r in con.execute("""SELECT pp.person, fi.sha256 FROM photo_people pp JOIN files fi ON fi.id=pp.file_id
+                            WHERE pp.album=? AND fi.uploaded=1 ORDER BY pp.person""", (album,)):
+        people.setdefault(r["person"], {"photos": [], "cover": None, "_q": -1.0})["photos"].append(r["sha256"])
     rows = con.execute("""SELECT fa.person, fa.x, fa.y, fa.w, fa.h, fa.quality, fi.sha256
                           FROM faces fa JOIN files fi ON fi.id=fa.file_id
-                          WHERE fa.album=? AND fa.person IS NOT NULL AND fi.uploaded=1
-                          ORDER BY fa.person""", (album,)).fetchall()
-    people = {}
+                          WHERE fa.album=? AND fa.person IS NOT NULL AND fi.uploaded=1""", (album,)).fetchall()
     for r in rows:
-        p = people.setdefault(r["person"], {"photos": [], "cover": None, "_q": -1.0})
-        if r["sha256"] not in p["photos"]:
-            p["photos"].append(r["sha256"])
+        p = people.get(r["person"])
+        if p is None:
+            continue
         q = (r["quality"] or 0) + min(r["w"], 0.3)  # 品質好、臉大的當代表照
         if q > p["_q"]:
             p["_q"] = q
             p["cover"] = {"photo_id": r["sha256"], "box": [r["x"], r["y"], r["w"], r["h"]]}
-    return [{"photos": p["photos"], "cover": p["cover"]} for _, p in sorted(people.items())]
+    return [{"photos": p["photos"], "cover": p["cover"]} for _, p in sorted(people.items()) if p["cover"]]
 
 
 # ---------- 3. 上傳 ----------

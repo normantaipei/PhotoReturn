@@ -4,10 +4,16 @@
   1. 偵測：macOS Vision 找臉、五官位置與臉部品質（VNDetectFaceLandmarksRequest / CaptureQuality）
   2. 特徵：依五官做相似變換對齊成 112×112，丟進 ArcFace（InsightFace w600k_r50，ONNX）得到 512 維特徵
   3. 分群：整本相簿的臉做 average-linkage 階層分群（cosine 距離），出現張數太少的群（路人）不算
+  4. 補上沒拍到臉的照片（cosplay 常戴墨鏡、側臉、背影、遠景）：
+     - 服裝：Vision 找出照片裡的人（VNDetectHumanRectanglesRequest），對每個人算外觀特徵
+       （VNGenerateImageFeaturePrintRequest）；臉落在身體範圍裡的當「已知是誰」，
+       其他人跟各人物的已知外觀比對，夠像而且明顯比第二像的人物更像才歸過去
+     - 時間：前後不久都拍到同一個人、中間的照片（暗場、細節、偵測不到人的）也歸給他
 
 模型授權：InsightFace 預訓練模型僅限非商業用途（https://github.com/deepinsight/insightface#license）。
 """
 
+import bisect
 import hashlib
 import io
 import shutil
@@ -29,6 +35,9 @@ MODEL_NAME = "w600k_r50.onnx"
 MODEL_SHA = "4c06341c33c2ca1f86781dab0e829f88ad5b64be9fba56e56bc9ebdefc619e43"
 
 DETECT_EDGE = 2048  # 偵測用的長邊；記憶卡原圖太大，縮小後 Vision 快很多，臉的細節也夠
+# 五官點對不上樣板（手遮臉、暗場時 Vision 會給出亂掉的五官）：對齊誤差太大或兩眼距離太窄的臉不採用
+MAX_ALIGN_ERROR = 12.0   # 112×112 上五點的平均誤差（px）；正常的臉 < 9
+MIN_EYE_RATIO = 0.18     # 兩眼距離 / 臉框寬；正常的臉 > 0.2
 
 # ArcFace 對齊樣板（112×112 上的左眼、右眼、鼻尖、左嘴角、右嘴角）
 ARCFACE_DST = np.array([[38.2946, 51.6963], [73.5318, 51.5014], [56.0252, 71.7366],
@@ -122,14 +131,30 @@ def _similarity(src: np.ndarray, dst: np.ndarray) -> np.ndarray:
     return m
 
 
-def _align(img: Image.Image, five: np.ndarray) -> Image.Image:
+def _align(img: Image.Image, five: np.ndarray):
+    """回傳 (112×112 對齊後的臉, 五點對齊誤差)。"""
     m = _similarity(five, ARCFACE_DST)
+    err = float(np.sqrt((((m[:, :2] @ five.T).T + m[:, 2] - ARCFACE_DST) ** 2).sum(1)).mean())
     inv = np.linalg.inv(np.vstack([m, [0, 0, 1]]))[:2]  # PIL 要的是輸出 → 輸入
-    return img.transform((112, 112), Image.AFFINE, inv.flatten().tolist(), Image.BILINEAR)
+    return img.transform((112, 112), Image.AFFINE, inv.flatten().tolist(), Image.BILINEAR), err
+
+
+def _feature_print(handler, box):
+    req = Vision.VNGenerateImageFeaturePrintRequest.alloc().init()
+    req.setRegionOfInterest_(box)
+    if not handler.performRequests_error_([req], None)[0] or not req.results():
+        return None
+    obs = req.results()[0]
+    v = np.frombuffer(bytes(obs.data()), dtype=np.float32 if obs.elementType() == 1 else np.float64)
+    v = v.astype(np.float32)
+    return v / (np.linalg.norm(v) or 1)
 
 
 def detect(path: Path, min_px: int):
-    """回傳 [(box, quality, aligned_crop)]；box = (x, y, w, h)，相對於轉正後整張圖、左上原點、0~1。"""
+    """回傳 (faces, bodies)：
+    faces  = [(box, quality, aligned_crop)]
+    bodies = [(box, feature)]：照片裡的每個人（全身或半身），feature 是 Vision 的外觀特徵
+    box = (x, y, w, h)，相對於轉正後整張圖、左上原點、0~1。"""
     with Image.open(path) as im:
         im.draft("RGB", (DETECT_EDGE, DETECT_EDGE))
         img = ImageOps.exif_transpose(im).convert("RGB")
@@ -139,7 +164,9 @@ def detect(path: Path, min_px: int):
     data = buf.getvalue()
     W, H = img.size
 
-    found = []
+    found, bodies = [], []
+    to_box = lambda bb: (max(0.0, bb.origin.x), max(0.0, 1 - bb.origin.y - bb.size.height),
+                         min(bb.size.width, 1.0), min(bb.size.height, 1.0))
     with objc.autorelease_pool():  # 長迴圈裡 pyobjc 不會自動釋放 ObjC 物件
         handler = Vision.VNImageRequestHandler.alloc().initWithData_options_(
             NSData.dataWithBytes_length_(data, len(data)), None)
@@ -165,10 +192,20 @@ def detect(path: Path, min_px: int):
                 five = _five_points(lm, (W, H))
             except Exception:
                 continue
-            box = (max(0.0, x), max(0.0, 1 - y - h), min(w, 1.0), min(h, 1.0))
-            found.append((box, q, _align(img, five)))
+            crop, err = _align(img, five)
+            if err > MAX_ALIGN_ERROR or np.linalg.norm(five[1] - five[0]) < MIN_EYE_RATIO * w * W:
+                continue
+            found.append((to_box(bb), q, crop))
+
+        human = Vision.VNDetectHumanRectanglesRequest.alloc().init()
+        human.setUpperBodyOnly_(False)
+        if handler.performRequests_error_([human], None)[0]:
+            for o in human.results() or []:
+                v = _feature_print(handler, o.boundingBox())
+                if v is not None:
+                    bodies.append((to_box(o.boundingBox()), v))
         del handler, lm_req, faces
-    return found
+    return found, bodies
 
 
 # ---------- 分群 ----------
@@ -186,9 +223,71 @@ def cluster(emb: np.ndarray, threshold: float) -> np.ndarray:
     return fcluster(z, t=1 - threshold, criterion="distance") - 1
 
 
+def _face_in_body(face, body) -> bool:
+    """臉的中心落在身體框的上 60%。"""
+    cx, cy = face[0] + face[2] / 2, face[1] + face[3] / 2
+    return body[0] <= cx <= body[0] + body[2] and body[1] <= cy <= body[1] + body[3] * 0.6
+
+
+def assign(photos: dict, body_threshold: float, body_margin: float, time_window: float) -> dict:
+    """把人物從臉擴散到同一場的其他照片。
+    photos：{photo: {"t": datetime 或 None, "faces": [(box, 人物或 None)], "bodies": [(box, feature)]}}
+    回傳 {photo: {人物: "face" | "body" | "time"}}。"""
+    out = {k: {} for k in photos}
+    for k, ph in photos.items():
+        for _, person in ph["faces"]:
+            if person is not None:
+                out[k][person] = "face"
+
+    # 服裝：身體框裡有認得的臉 = 已知外觀；其他身體跟各人物的已知外觀比
+    anchors, unknown = {}, []
+    for k, ph in photos.items():
+        for body, feat in ph["bodies"]:
+            who = [p for f, p in ph["faces"] if p is not None and _face_in_body(f, body)]
+            if who:
+                anchors.setdefault(who[0], []).append(feat)
+            elif not any(_face_in_body(f, body) for f, _ in ph["faces"]):  # 臉在但認不出的人不猜
+                unknown.append((k, feat))
+    if anchors and unknown:
+        people = list(anchors)
+        mats = [np.array(anchors[p]) for p in people]
+        for k, feat in unknown:
+            # 每個人物取最像的 3 張已知外觀的平均，避免單張巧合
+            scores = sorted(((np.sort(m @ feat)[-3:].mean(), p) for m, p in zip(mats, people)), reverse=True)
+            best, p = scores[0]
+            second = scores[1][0] if len(scores) > 1 else -1.0
+            if best >= body_threshold and best - second >= body_margin:
+                out[k].setdefault(p, "body")
+
+    # 時間：還沒歸屬的照片，看前後最近一張有人物的照片
+    if time_window > 0:
+        timed = sorted((ph["t"], k) for k, ph in photos.items() if ph["t"] and out[k])
+        times = [t for t, _ in timed]
+        for k, ph in photos.items():
+            if out[k] or not ph["t"]:
+                continue
+            i = bisect.bisect_left(times, ph["t"])
+            before = timed[i - 1] if i > 0 else None
+            after = timed[i] if i < len(timed) else None
+            gap = lambda x: abs((x[0] - ph["t"]).total_seconds()) if x else float("inf")
+            if before and after and gap(before) <= time_window and gap(after) <= time_window:
+                # 前後都拍到同一個人：中間這張也是他
+                for p in set(out[before[1]]) & set(out[after[1]]):
+                    out[k][p] = "time"
+            else:
+                # 只有一邊很近（一段的開頭或結尾），而且那張只有一個人
+                near = min((x for x in (before, after) if x), key=gap, default=None)
+                if near and gap(near) <= time_window / 5 and len(out[near[1]]) == 1:
+                    out[k][next(iter(out[near[1]]))] = "time"
+    return out
+
+
 if __name__ == "__main__":  # 簡單測試：python faces.py 模型路徑 照片...
     model = ensure_model(Path(sys.argv[1]))
     emb = Embedder(model)
     for p in sys.argv[2:]:
-        for box, q, crop in detect(Path(p), 40):
-            print(p, [round(v, 3) for v in box], q, emb([crop])[0][:4])
+        found, bodies = detect(Path(p), 40)
+        for box, q, crop in found:
+            print(p, "face", [round(v, 3) for v in box], q, emb([crop])[0][:4])
+        for box, _ in bodies:
+            print(p, "body", [round(v, 3) for v in box])
