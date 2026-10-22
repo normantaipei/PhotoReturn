@@ -13,8 +13,8 @@ PhotoReturn ingest — 回家插卡後跑這支：
 用法（在 PhotoReturn 資料夾執行）:
   ingest/ingest.sh --servers                             # 列出伺服器設定（不同場次的返圖站）
   ingest/ingest.sh --profile cwt67                       # 插卡，上傳到伺服器設定「cwt67」
-  ingest/ingest.sh --profile cwt67 --album 2026-10-25_CWT67 --title "CWT67 Day1"
-  ingest/ingest.sh --resume 2026-10-25_CWT67             # 不讀卡，繼續沒做完的步驟（沿用上次的伺服器）
+  ingest/ingest.sh --profile cwt67 --album 2026_10_25_CWT67 --title "CWT67 Day1"
+  ingest/ingest.sh --resume 2026_10_25_CWT67             # 不讀卡，繼續沒做完的步驟（沿用上次的伺服器）
   ingest/ingest.sh --list                                # 暫存區的相簿、進度與各自的伺服器
 """
 
@@ -257,7 +257,7 @@ def ask_album(con, default: str) -> str:
     """沒給 --album 時，插卡後問相簿名稱；空白自動換成底線。"""
     while True:
         try:
-            ans = input(f"\n相簿名稱（例 2026-06-30_台北外拍，直接 Enter = {default}）：").strip()
+            ans = input(f"\n相簿名稱（例 2026_06_30_台北外拍，直接 Enter = {default}）：").strip()
         except EOFError:
             return default
         name = re.sub(r"\s+", "_", ans) or default
@@ -275,8 +275,8 @@ def step_copy(con, staging: Path, card: Path, album: str, title: str, prism, eje
         sys.exit(f"{card} 裡沒有照片")
     shoot_date = dt.date.fromtimestamp(min(st.st_mtime for _, st in files)).isoformat()
     if not album and sys.stdin.isatty():
-        album = ask_album(con, shoot_date)
-    album = album or shoot_date
+        album = ask_album(con, shoot_date.replace("-", "_"))
+    album = album or shoot_date.replace("-", "_")  # 預設相簿名 = 拍攝日期，日期一律用底線：2026_10_23
     if not ALBUM_RE.match(album):
         sys.exit(f"相簿名稱只能用文字、數字、. _ -（不能有空白）：{album}")
     con.execute("INSERT OR IGNORE INTO albums (name, title, shoot_date, created) VALUES (?,?,?,?)",

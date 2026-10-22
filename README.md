@@ -140,9 +140,9 @@ VPN 連回家若被分到別的網段，要上傳時把該網段加進 `PHOTORET
 沒給 `--album` 時，插卡後會詢問**相簿名稱**（直接 Enter 用拍攝日期；空白會自動換成底線）。之後只要：
 
 ```bash
-ingest/ingest.sh                       # 自動找卡（沒插就等），相簿名 = 拍攝日期
-ingest/ingest.sh --album 2026-10-25_CWT67 --title "CWT67 Day1"
-ingest/ingest.sh --resume 2026-10-25_CWT67   # 中斷後接著跑（不需要卡）
+ingest/ingest.sh                       # 自動找卡（沒插就等），相簿名 = 拍攝日期（如 2026_10_23）
+ingest/ingest.sh --album 2026_10_25_CWT67 --title "CWT67 Day1"
+ingest/ingest.sh --resume 2026_10_25_CWT67   # 中斷後接著跑（不需要卡）
 ingest/ingest.sh --list                      # 所有相簿進度與返圖網址
 ```
 
